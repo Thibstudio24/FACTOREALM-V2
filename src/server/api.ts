@@ -45,6 +45,7 @@ import { createEncryptedBackup, restoreEncryptedBackup } from './backup';
 import { newId, safeUploadPath, withTransaction, type DbContext } from './db';
 import { initializeDemoWorkspace } from './demo';
 import { generateCommercialDocumentPdf, generateExpensePdf } from './pdf';
+import { initializeCompanyInDb } from './setup';
 
 interface AuthedUser {
   id: string;
@@ -392,72 +393,9 @@ export function createApiRouter(ctx: DbContext): express.Router {
         res.status(409).json({ error: 'Instance déjà initialisée.' });
         return;
       }
-      const {
-        companyName,
-        legalForm = 'SAS',
-        siret = '',
-        vatNumber = '',
-        address = '',
-        postalCode = '',
-        city = '',
-        vatRegime = 'reel_normal',
-        adminName,
-        adminEmail,
-        adminPassword,
-      } = req.body ?? {};
-
-      if (!companyName?.trim() || !adminName?.trim() || !adminEmail?.trim() || !adminPassword) {
-        res.status(400).json({ error: 'Tous les champs obligatoires doivent être renseignés.' });
-        return;
-      }
-
-      const { plaintextKey, keyHash } = generateCompanyRecoveryKey();
-      const companyId = newId('cmp');
-      const userId = newId('usr');
-      const now = new Date().toISOString();
-      const pwHash = hashPassword(String(adminPassword));
-
-      withTransaction(db, () => {
-        db.prepare(
-          `INSERT INTO companies (
-            id, name, legal_form, siret, vat_number, address, postal_code, city, email,
-            vat_regime, recovery_key_hash, is_demo, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-        ).run(
-          companyId,
-          String(companyName).trim(),
-          String(legalForm),
-          String(siret).trim(),
-          String(vatNumber).trim(),
-          String(address).trim(),
-          String(postalCode).trim(),
-          String(city).trim(),
-          String(adminEmail).trim().toLowerCase(),
-          String(vatRegime),
-          keyHash,
-          now,
-        );
-
-        db.prepare(
-          `INSERT INTO users (id, email, full_name, role, password_hash, totp_enabled, is_active, created_at)
-           VALUES (?, ?, ?, 'admin', ?, 0, 1, ?)`,
-        ).run(userId, String(adminEmail).trim().toLowerCase(), String(adminName).trim(), pwHash, now);
-
-        db.prepare(
-          `INSERT INTO bank_accounts (id, name, kind, iban, initial_balance_cents, created_at)
-           VALUES (?, 'Compte courant principal', 'banque', '', 0, ?)`,
-        ).run(newId('bnk'), now);
-      });
-
-      createSessionForUser(res, userId);
-      logAudit(
-        { id: userId, email: adminEmail, fullName: adminName, role: 'admin', totpEnabled: false, accountingScopeNote: '' },
-        'SETUP_INIT',
-        'company',
-        companyId,
-        'Initialisation de l\'entreprise sans mot de passe prédéfini',
-      );
-      res.status(201).json({ recoveryKey: plaintextKey, companyId });
+      const result = initializeCompanyInDb(db, req.body ?? {});
+      createSessionForUser(res, result.userId);
+      res.status(201).json({ recoveryKey: result.recoveryKey, companyId: result.companyId });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }

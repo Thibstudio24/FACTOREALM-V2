@@ -12,7 +12,13 @@ Cette reconstruction a été réalisée dans les limites réelles de l'environne
 - **Livré et exécutable :** application web full-stack complète (API Express + persistance `node:sqlite` + calculs exacts en centimes + PDF via `pdf-lib` + chiffrement AES-256-GCM des sauvegardes + interface React/Vite/Tailwind v4 thèmes clair et sombre + suite de tests automatisés + documentation complète).
 - **Non produit dans cet environnement :** binaires Go, application bureau Tauri/Rust, installateur Windows `.exe`, paquets Linux `.deb`, moteur PostgreSQL/SQLCipher natifs (absents du conteneur : aucun `go`, `rustc`, `cargo`, `gcc`, `psql`). Voir `docs/PROJECT_STATE.md` et `docs/KNOWN_LIMITS.md`.
 
-## Démarrage rapide (bash)
+## Installateur serveur (Linux & Windows)
+
+- **Linux (`bash`) :** `bash install.sh` (configure dossier, port, `.env`, entreprise, build, tests et génère `factorealm.service` / `install-systemd.sh`)
+- **Windows (`PowerShell`) :** `powershell -ExecutionPolicy Bypass -File .\install.ps1` (configure dossier, port, `.env`, entreprise, build, tests et génère `register-windows-task.ps1`)
+- **Paquet Debian/Ubuntu (`.deb`) :** `bash installer/build-deb.sh`
+
+## Démarrage rapide manuel (bash)
 
 ```bash
 npm install
@@ -20,7 +26,7 @@ npm test
 npm run dev
 ```
 
-Puis ouvrir `http://localhost:3000` dans votre navigateur. Au premier lancement, aucun mot de passe administrateur prédéfini n'existe : vous définissez votre entreprise (ou choisissez explicitement l'espace de démonstration séparé), votre compte administrateur et recevez une clé de récupération entreprise unique (`FRK-...`).
+Puis ouvrir `http://localhost:3000` (ou le port configuré) dans votre navigateur. Au premier lancement (ou pendant l'installateur), aucun mot de passe administrateur prédéfini n'existe : vous définissez votre entreprise (ou choisissez explicitement l'espace de démonstration séparé), votre compte administrateur et recevez une clé de récupération entreprise unique (`FRK-...`).
 
 ## Documentation détaillée
 

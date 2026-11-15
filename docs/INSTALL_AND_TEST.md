@@ -3,8 +3,40 @@
 ## Prérequis vérifiés
 - **Node.js :** `v22.23.2` (ou Node 22.x LTS avec support `node:sqlite`)
 - **npm :** `10.9.8` (ou supérieur)
-- **Port local :** `3000` (`http://localhost:3000`)
-- **Données persistantes :** `./data/factorealm.sqlite` et `./data/uploads/`
+- **Port local :** configurable (défaut `3000`, `http://127.0.0.1:3000`)
+- **Données persistantes :** configurables via `.env` (défaut `./data/factorealm.sqlite` et `./data/uploads/`)
+
+---
+
+## Installateur serveur automatique (Linux & Windows)
+
+L'installateur interactif configure le dossier d'installation, le dossier de données, le port, l'interface d'écoute (`127.0.0.1` par défaut ou `0.0.0.0`), initialise éventuellement l'entreprise et le premier compte administrateur (en affichant la clé de récupération `FRK-...`), exécute `npm install`, `npm run build`, `npm test`, et génère les scripts de démarrage / service (`systemd` sous Linux, tâche planifiée sous Windows).
+
+### Linux (`bash`)
+```bash
+bash install.sh
+# Ou pour installer automatiquement le service systemd en root :
+sudo bash install.sh
+# Ou pour construire un paquet Debian/Ubuntu (.deb) :
+bash installer/build-deb.sh
+```
+
+### Windows 11 / Windows Server (`PowerShell`)
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+# Puis pour enregistrer le démarrage automatique (PowerShell Administrateur) :
+.\register-windows-task.ps1
+```
+
+### Mode non interactif (exemple)
+```bash
+FACTOREALM_ADMIN_PASS="MotDePasseRobuste2026!" bash install.sh --yes \
+  --install-dir=/opt/factorealm --data-dir=/var/lib/factorealm \
+  --port=3000 --host=127.0.0.1 --init-company \
+  --company-name="Ma Société SAS" --siret=73282932000074 \
+  --admin-name="Camille Moreau" --admin-email="admin@entreprise.fr" \
+  --admin-password-env=FACTOREALM_ADMIN_PASS
+```
 
 ---
 
