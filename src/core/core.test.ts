@@ -29,6 +29,8 @@ import {
   generateCompanyRecoveryKey,
   generateTotpSecret,
   hashPassword,
+  validatePasswordStrength,
+  validateSafeLogoDataUrl,
   verifyPassword,
   verifyRecoveryKey,
   verifyTotpCode,
@@ -165,6 +167,9 @@ test('Détection doublon métier et RBAC', () => {
   assert.ok(dup && dup.toLowerCase().includes('f-99'));
   assert.equal(hasPermission('salarie', 'billing:finalize'), false);
   assert.equal(hasPermission('comptable', 'accounting:close'), true);
+  assert.equal(hasPermission('salarie', 'tickets:create'), true);
+  assert.equal(hasPermission('salarie', 'tickets:manage'), false);
+  assert.equal(hasPermission('admin', 'rgpd:manage'), true);
 });
 
 test('Sécurité : scrypt, clé de récupération, TOTP RFC 6238 et chiffrement AES-256-GCM', () => {
@@ -188,4 +193,19 @@ test('Sécurité : scrypt, clé de récupération, TOTP RFC 6238 et chiffrement 
   const decrypted = decryptBufferWithPassphrase(encrypted, 'PhraseSauvegarde2026!');
   assert.equal(decrypted.toString('utf8'), payload.toString('utf8'));
   assert.throws(() => decryptBufferWithPassphrase(encrypted, 'MauvaisePhrase2026!'));
+});
+
+test('Politique de complexité mot de passe et validation stricte du logo PNG/JPEG', () => {
+  assert.throws(() => validatePasswordStrength('court123'));
+  assert.throws(() => validatePasswordStrength('toutenminusculeslong'));
+  assert.doesNotThrow(() => validatePasswordStrength('MotDePasse2026'));
+
+  assert.equal(validateSafeLogoDataUrl(''), null);
+  assert.equal(validateSafeLogoDataUrl(null), null);
+  assert.throws(() => validateSafeLogoDataUrl('data:image/svg+xml;base64,PHN2Zz4='));
+  assert.throws(() => validateSafeLogoDataUrl('https://exemple.fr/logo.png'));
+
+  const validPng =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  assert.equal(validateSafeLogoDataUrl(validPng), validPng);
 });

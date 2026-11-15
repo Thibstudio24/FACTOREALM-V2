@@ -19,6 +19,18 @@ const KIND_LABELS: Record<CommercialDocument['kind'], string> = {
   avoir: 'AVOIR',
 };
 
+async function tryEmbedCompanyLogo(pdf: PDFDocument, logoDataUrl: string | null) {
+  if (!logoDataUrl) return null;
+  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/=]+)$/.exec(logoDataUrl.trim());
+  if (!match) return null;
+  try {
+    const bytes = Buffer.from(match[2], 'base64');
+    return match[1] === 'png' ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+  } catch {
+    return null;
+  }
+}
+
 export async function generateCommercialDocumentPdf(
   docData: CommercialDocument,
   company: CompanyProfile,
@@ -34,10 +46,30 @@ export async function generateCommercialDocumentPdf(
   const lineGray = rgb(0.86, 0.89, 0.93);
 
   let y = 795;
+  let companyHeaderX = 42;
+  let logoBottomY = y;
+
+  const embeddedLogo = await tryEmbedCompanyLogo(pdf, company.logoDataUrl);
+  if (embeddedLogo) {
+    const maxW = 64;
+    const maxH = 44;
+    const scale = Math.min(maxW / embeddedLogo.width, maxH / embeddedLogo.height, 1);
+    const drawW = embeddedLogo.width * scale;
+    const drawH = embeddedLogo.height * scale;
+    const drawY = 808 - drawH;
+    page.drawImage(embeddedLogo, {
+      x: 42,
+      y: drawY,
+      width: drawW,
+      height: drawH,
+    });
+    companyHeaderX = 42 + drawW + 12;
+    logoBottomY = drawY - 4;
+  }
 
   // En-tête entreprise
   page.drawText(sanitizePdfText(company.name), {
-    x: 42,
+    x: companyHeaderX,
     y,
     size: 16,
     font: fontBold,
@@ -62,9 +94,10 @@ export async function generateCommercialDocumentPdf(
   ].filter(Boolean);
 
   for (const row of companyMeta) {
-    page.drawText(sanitizePdfText(row), { x: 42, y, size: 8.5, font: fontRegular, color: slate });
+    page.drawText(sanitizePdfText(row), { x: companyHeaderX, y, size: 8.5, font: fontRegular, color: slate });
     y -= 12;
   }
+  y = Math.min(y, logoBottomY);
 
   // Bloc dates + client
   let yRight = 779;
@@ -245,8 +278,18 @@ export async function generateExpensePdf(
   const fontBold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const navy = rgb(0.03, 0.11, 0.23);
 
+  let titleX = 42;
+  const embeddedLogo = await tryEmbedCompanyLogo(pdf, company.logoDataUrl);
+  if (embeddedLogo) {
+    const scale = Math.min(48 / embeddedLogo.width, 36 / embeddedLogo.height, 1);
+    const drawW = embeddedLogo.width * scale;
+    const drawH = embeddedLogo.height * scale;
+    page.drawImage(embeddedLogo, { x: 42, y: 798 - drawH, width: drawW, height: drawH });
+    titleX = 42 + drawW + 12;
+  }
+
   page.drawText(sanitizePdfText(`${company.name} — NOTE DE FRAIS`), {
-    x: 42,
+    x: titleX,
     y: 780,
     size: 15,
     font: fontBold,

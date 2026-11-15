@@ -30,6 +30,7 @@ OutputBaseFilename=Factorealm-Setup-{#MyAppVersion}-x64
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+ChangesEnvironment=yes
 
 [Languages]
 Name: "french"; MessagesFile: "compiler:Languages\French.isl"
@@ -43,24 +44,22 @@ Name: "desktopicon"; Description: "Créer un raccourci d'ouverture dans le navig
 Name: "{commonappdata}\Factorealm\data\uploads"
 
 [Files]
-; Copier l'application sans node_modules ni data (npm install s'exécute à l'installation)
+; Copier uniquement les fichiers nécessaires à l'exécution (sans docs, sources frontend ni tests)
 Source: "..\..\server.ts"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\package.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\package-lock.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\tsconfig.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\vite.config.ts"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\index.html"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\metadata.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\.env.example"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\release.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\dist\*"; DestDir: "{app}\dist"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\migrations\*"; DestDir: "{app}\migrations"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\public\*"; DestDir: "{app}\public"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\installer\*"; DestDir: "{app}\installer"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Inclure dist\ s'il a déjà été compilé avant le packaging Inno Setup
-Source: "..\..\dist\*"; DestDir: "{app}\dist"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "..\..\src\core\*"; DestDir: "{app}\src\core"; Excludes: "*.test.*,*.spec.*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\src\server\*"; DestDir: "{app}\src\server"; Excludes: "*.test.*,*.spec.*"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\installer\install.mjs"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "..\..\installer\installerCore.mjs"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "..\..\installer\bootstrap-company.ts"; DestDir: "{app}\installer"; Flags: ignoreversion
+Source: "..\..\installer\windows\install-from-inno.ps1"; DestDir: "{app}\installer\windows"; Flags: ignoreversion
+
+[Registry]
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}\bin"; Check: NeedsAddPath(ExpandConstant('{app}\bin'))
 
 [Icons]
 Name: "{group}\Lancer le serveur Factorealm"; Filename: "{app}\factorealm-start.cmd"; WorkingDir: "{app}"; Comment: "Démarrer le serveur Factorealm (port {code:GetPort})"
@@ -80,6 +79,7 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 Filename: "http://127.0.0.1:{code:GetPort}"; Description: "Ouvrir Factorealm dans le navigateur"; Flags: postinstall shellexec skipifsilent
 
 [UninstallRun]
+Filename: "{app}\bin\factorealm.cmd"; Parameters: "stop"; Flags: runhidden; RunOnceId: "StopFactorealmCli"
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\unregister-windows-task.ps1"""; Flags: runhidden; RunOnceId: "RemoveFactorealmTask"
 
 [Code]
@@ -297,6 +297,61 @@ begin
   end;
 end;
 
+function NeedsAddPath(Param: String): Boolean;
+var
+  OrigPath: String;
+  CleanParam: String;
+begin
+  CleanParam := RemoveBackslashUnlessRoot(Param);
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', OrigPath) then
+  begin
+    Result := True;
+    exit;
+  end;
+  Result := Pos(';' + UpperCase(CleanParam) + ';', ';' + UpperCase(OrigPath) + ';') = 0;
+end;
+
+procedure RemoveDirFromMachinePath(DirToRemove: String);
+var
+  OrigPath, CleanDir, NewPath, Part: String;
+  P: Integer;
+begin
+  CleanDir := UpperCase(RemoveBackslashUnlessRoot(DirToRemove));
+  if not RegQueryStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', OrigPath) then
+    exit;
+
+  NewPath := '';
+  while Length(OrigPath) > 0 do
+  begin
+    P := Pos(';', OrigPath);
+    if P > 0 then
+    begin
+      Part := Copy(OrigPath, 1, P - 1);
+      Delete(OrigPath, 1, P);
+    end
+    else
+    begin
+      Part := OrigPath;
+      OrigPath := '';
+    end;
+    Part := Trim(Part);
+    if (Part <> '') and (UpperCase(RemoveBackslashUnlessRoot(Part)) <> CleanDir) then
+    begin
+      if NewPath <> '' then
+        NewPath := NewPath + ';';
+      NewPath := NewPath + Part;
+    end;
+  end;
+
+  RegWriteExpandStringValue(HKEY_LOCAL_MACHINE,
+    'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+    'Path', NewPath);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if (CurStep = ssInstall) and (CompanyModePage.SelectedValueIndex = 1) then
@@ -307,5 +362,13 @@ begin
   else if CurStep = ssPostInstall then
   begin
     SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_PASS', '');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    RemoveDirFromMachinePath(ExpandConstant('{app}\bin'));
   end;
 end;

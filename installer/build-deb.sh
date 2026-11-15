@@ -30,12 +30,19 @@ mkdir -p "$PKG_ROOT/var/lib/factorealm/uploads"
 mkdir -p "$PKG_ROOT/lib/systemd/system"
 mkdir -p "$PKG_ROOT/usr/local/bin"
 
-# Copier l'application (sans données locales ni node_modules préinstallés si non souhaités)
-for item in server.ts package.json package-lock.json tsconfig.json vite.config.ts index.html metadata.json .env.example README.md release.md src migrations public installer dist; do
+# Copier uniquement les fichiers nécessaires à l'exécution du serveur (sans docs, tests ni sources frontend)
+mkdir -p "$PKG_ROOT/opt/factorealm/bin" "$PKG_ROOT/opt/factorealm/src/core" "$PKG_ROOT/opt/factorealm/src/server" "$PKG_ROOT/opt/factorealm/installer"
+for item in server.ts package.json package-lock.json migrations dist; do
   if [ -e "$ROOT_DIR/$item" ]; then
     cp -r "$ROOT_DIR/$item" "$PKG_ROOT/opt/factorealm/"
   fi
 done
+cp "$ROOT_DIR/bin/factorealm.mjs" "$PKG_ROOT/opt/factorealm/bin/factorealm.mjs"
+chmod 0755 "$PKG_ROOT/opt/factorealm/bin/factorealm.mjs"
+cp -r "$ROOT_DIR/src/core/"* "$PKG_ROOT/opt/factorealm/src/core/"
+cp -r "$ROOT_DIR/src/server/"* "$PKG_ROOT/opt/factorealm/src/server/"
+find "$PKG_ROOT/opt/factorealm/src" -type f \( -name '*.test.*' -o -name '*.spec.*' \) -delete
+cp "$ROOT_DIR/installer/install.mjs" "$ROOT_DIR/installer/installerCore.mjs" "$ROOT_DIR/installer/bootstrap-company.ts" "$PKG_ROOT/opt/factorealm/installer/"
 
 cat > "$PKG_ROOT/etc/factorealm/factorealm.env" <<'EOF'
 NODE_ENV=production
@@ -65,11 +72,17 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
+cat > "$PKG_ROOT/usr/local/bin/factorealm" <<'EOF'
+#!/usr/bin/env bash
+exec node /opt/factorealm/bin/factorealm.mjs "$@"
+EOF
+chmod 0755 "$PKG_ROOT/usr/local/bin/factorealm"
+
 cat > "$PKG_ROOT/usr/local/bin/factorealm-configure" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 cd /opt/factorealm
-exec node installer/install.mjs --install-dir=/opt/factorealm --data-dir=/var/lib/factorealm "$@"
+exec node installer/install.mjs --install-dir=/opt/factorealm --data-dir=/var/lib/factorealm --skip-build --omit-dev --skip-tests "$@"
 EOF
 chmod 0755 "$PKG_ROOT/usr/local/bin/factorealm-configure"
 
@@ -98,9 +111,9 @@ mkdir -p /var/lib/factorealm/uploads
 chown -R factorealm:factorealm /var/lib/factorealm /opt/factorealm
 chmod 0640 /etc/factorealm/factorealm.env
 echo "Factorealm installe dans /opt/factorealm."
-echo "Si les dependances npm ne sont pas encore installees et pour configurer port/entreprise :"
+echo "Pour installer les dependances et configurer port/entreprise :"
 echo "  sudo factorealm-configure"
-echo "Puis activer le service : sudo systemctl enable --now factorealm"
+echo "Commandes disponibles ensuite : factorealm start | stop | restart | status"
 EOF
 chmod 0755 "$PKG_ROOT/DEBIAN/postinst"
 

@@ -61,7 +61,26 @@ export function initDatabase(options?: { dbPath?: string; uploadDir?: string }):
     insertPcg.run(code, label, kind);
   }
 
+  ensureSchemaUpgrades(db);
+
   return { db, dbPath, uploadDir };
+}
+
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
+}
+
+function ensureSchemaUpgrades(db: DatabaseSync): void {
+  ensureColumn(db, 'companies', 'session_timeout_minutes', 'INTEGER NOT NULL DEFAULT 15');
+  ensureColumn(db, 'companies', 'enforce_2fa', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(db, 'companies', 'rgpd_dpo_name', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'companies', 'rgpd_dpo_email', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'companies', 'rgpd_retention_days', 'INTEGER NOT NULL DEFAULT 3650');
+  ensureColumn(db, 'sessions', 'last_activity_at', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'sessions', 'user_agent', "TEXT NOT NULL DEFAULT ''");
 }
 
 export function withTransaction<T>(db: DatabaseSync, fn: () => T): T {

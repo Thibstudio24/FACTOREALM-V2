@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS companies (
   accent_color TEXT NOT NULL DEFAULT '#0066FF',
   logo_data_url TEXT,
   fiscal_year_start_month INTEGER NOT NULL DEFAULT 1,
+  session_timeout_minutes INTEGER NOT NULL DEFAULT 15,
+  enforce_2fa INTEGER NOT NULL DEFAULT 0,
+  rgpd_dpo_name TEXT NOT NULL DEFAULT '',
+  rgpd_dpo_email TEXT NOT NULL DEFAULT '',
+  rgpd_retention_days INTEGER NOT NULL DEFAULT 3650,
   recovery_key_hash TEXT NOT NULL,
   is_demo INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
@@ -54,6 +59,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   token_hash TEXT NOT NULL UNIQUE,
   expires_at TEXT NOT NULL,
+  last_activity_at TEXT NOT NULL DEFAULT '',
+  user_agent TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 
@@ -352,6 +359,34 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS support_tickets (
+  id TEXT PRIMARY KEY,
+  ticket_number TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'incident',
+  priority TEXT NOT NULL DEFAULT 'normale',
+  status TEXT NOT NULL DEFAULT 'ouvert',
+  requester_user_id TEXT NOT NULL REFERENCES users(id),
+  requester_name TEXT NOT NULL,
+  assignee_user_id TEXT REFERENCES users(id),
+  assignee_name TEXT NOT NULL DEFAULT '',
+  resolution_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS support_ticket_comments (
+  id TEXT PRIMARY KEY,
+  ticket_id TEXT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+  author_user_id TEXT NOT NULL,
+  author_name TEXT NOT NULL,
+  body TEXT NOT NULL,
+  is_internal INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_kind_status ON documents(kind, status);
 CREATE INDEX IF NOT EXISTS idx_documents_contact ON documents(contact_id);
 CREATE INDEX IF NOT EXISTS idx_payments_doc ON payments(document_id);
@@ -359,3 +394,4 @@ CREATE INDEX IF NOT EXISTS idx_receipts_sha256 ON receipts(sha256);
 CREATE INDEX IF NOT EXISTS idx_bank_tx_date ON bank_transactions(tx_date);
 CREATE INDEX IF NOT EXISTS idx_journal_date ON journal_entries(entry_date);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_status ON support_tickets(status, updated_at DESC);

@@ -31,6 +31,18 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 powershell -ExecutionPolicy Bypass -File .\installer\windows\build-inno.ps1
 ```
 
+### Commandes globales (`PATH` Windows et Linux)
+
+Après installation (`install.sh`, `install.ps1`, paquet `.deb` ou installeur Windows `.exe`), la commande `factorealm` est disponible dans le `PATH` :
+
+```bash
+factorealm start    # Démarre le serveur Factorealm en arrière-plan
+factorealm stop     # Arrête le serveur Factorealm
+factorealm restart  # Redémarre le serveur Factorealm
+factorealm status   # Affiche l'état (EN COURS / ARRÊTÉ), le PID, le port et l'entreprise
+factorealm logs     # Affiche les 40 dernières lignes du journal serveur
+```
+
 ### Mode non interactif (exemple)
 ```bash
 FACTOREALM_ADMIN_PASS="MotDePasseRobuste2026!" bash install.sh --yes \
@@ -75,7 +87,8 @@ npm run start
 Depuis le dossier racine du projet dans PowerShell :
 
 ```powershell
-# 1. Installer les dépendances
+# 1. Nettoyer un éventuel package-lock.json généré sous Linux (contourne npm/cli#4828 pour les binaires natifs Windows), puis installer
+Remove-Item -Recurse -Force node_modules, package-lock.json -ErrorAction SilentlyContinue
 npm.cmd install
 
 # 2. Exécuter les tests unitaires et d'intégration

@@ -7,17 +7,22 @@ import readline from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import {
   buildEnvFileContent,
+  buildLinuxCliWrapper,
   buildLinuxStartScript,
   buildLinuxSystemdInstallScript,
   buildLinuxSystemdUnit,
+  buildWindowsAddToPathPs1,
   buildWindowsRegisterTaskPs1,
+  buildWindowsRemoveFromPathPs1,
   buildWindowsRemoveStartMenuShortcutPs1,
   buildWindowsStartCmd,
   buildWindowsStartMenuShortcutPs1,
   buildWindowsStartPs1,
   buildWindowsUnregisterTaskPs1,
   copyProjectFiles,
+  lockfileNeedsPlatformReset,
   parseInstallerArgs,
+  pruneUnnecessaryInstalledFiles,
   validateHost,
   validatePort,
 } from './installerCore.mjs';
@@ -56,6 +61,9 @@ Options principales :
   --skip-install               Ne pas exécuter npm install
   --skip-build                 Ne pas exécuter npm run build
   --skip-shortcuts             Ne pas créer le raccourci dans le menu Démarrer Windows
+  --skip-path                  Ne pas ajouter la commande factorealm au PATH
+  --omit-dev                   Installer uniquement les dépendances de production (dist/ requis)
+  --runtime-only               Copier uniquement les fichiers utiles à l'exécution (exclut docs, tests, etc.)
   --install-service            Installer et activer le service systemd (Linux root uniquement)
   --help, -h                   Afficher cette aide
 `);
@@ -332,11 +340,22 @@ async function main() {
 
     rl?.close();
 
-    // 5. Copie des fichiers si dossier cible distinct
+    const isDistinctTarget = path.resolve(SOURCE_ROOT) !== installDir;
+    const hasPrebuiltDist = fs.existsSync(path.join(SOURCE_ROOT, 'dist', 'index.html'));
+    const runtimeOnly = opts.runtimeOnly || (opts.skipBuild && hasPrebuiltDist);
+
+    // 5. Copie des fichiers si dossier cible distinct (sans docs, dépôts de packaging ni fichiers inutiles)
     console.log(`\n[1/5] Préparation du dossier d'installation : ${installDir}`);
-    if (path.resolve(SOURCE_ROOT) !== installDir) {
-      copyProjectFiles(SOURCE_ROOT, installDir);
-      console.log('      Fichiers sources copiés.');
+    if (isDistinctTarget) {
+      copyProjectFiles(SOURCE_ROOT, installDir, {
+        includeTests: runTests,
+        runtimeOnly,
+      });
+      console.log(
+        runtimeOnly
+          ? '      Fichiers d\'exécution copiés (docs, sources frontend et tests exclus).'
+          : '      Fichiers applicatifs copiés (docs, exemples et scripts de packaging exclus).',
+      );
     }
     fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, 'factorealm.sqlite');
@@ -354,8 +373,21 @@ async function main() {
 
     // 7. Installation dépendances & build
     if (!opts.skipInstall) {
-      console.log('[3/5] Installation des dépendances npm...');
-      runCmd(npmCmd, ['install'], installDir);
+      const lockPath = path.join(installDir, 'package-lock.json');
+      if (lockfileNeedsPlatformReset(lockPath)) {
+        console.log(
+          `      Lockfile d'une autre plateforme détecté : réinitialisation pour ${process.platform}-${process.arch}...`,
+        );
+        fs.rmSync(lockPath, { force: true });
+        fs.rmSync(path.join(installDir, 'node_modules'), { recursive: true, force: true });
+      }
+      const useOmitDev = opts.omitDev && (opts.skipBuild || fs.existsSync(path.join(installDir, 'dist', 'index.html'))) && !runTests;
+      console.log(
+        useOmitDev
+          ? '[3/5] Installation des dépendances de production (npm install --omit=dev)...'
+          : '[3/5] Installation des dépendances npm...',
+      );
+      runCmd(npmCmd, useOmitDev ? ['install', '--omit=dev'] : ['install'], installDir);
     } else {
       console.log('[3/5] Installation npm ignorée (--skip-install).');
     }
@@ -370,6 +402,16 @@ async function main() {
     if (runTests) {
       console.log('      Exécution des tests automatisés (npm test)...');
       runCmd(npmCmd, ['test'], installDir);
+    }
+
+    if (isDistinctTarget) {
+      const hasCompiledDist = fs.existsSync(path.join(installDir, 'dist', 'index.html'));
+      if (opts.omitDev && !opts.skipInstall && !opts.skipBuild && hasCompiledDist) {
+        runCmd(npmCmd, ['prune', '--omit=dev'], installDir);
+      }
+      pruneUnnecessaryInstalledFiles(installDir, {
+        removeFrontendSources: Boolean(opts.omitDev && hasCompiledDist),
+      });
     }
 
     // 8. Initialisation base + entreprise si demandée
@@ -395,53 +437,121 @@ async function main() {
       console.log('[5/5] Initialisation entreprise reportée au premier accès web.');
     }
 
-    // 9. Génération des lanceurs & services Linux / Windows
-    const linuxStartPath = path.join(installDir, 'factorealm-start.sh');
-    fs.writeFileSync(linuxStartPath, buildLinuxStartScript({ installDir }), { mode: 0o755 });
-    fs.writeFileSync(
-      path.join(installDir, 'factorealm.service'),
-      buildLinuxSystemdUnit({
-        installDir,
-        envFilePath: envPath,
-        nodeBinPath: process.execPath,
-        userName: isWin ? 'factorealm' : os.userInfo().username,
-      }),
-    );
-    fs.writeFileSync(
-      path.join(installDir, 'install-systemd.sh'),
-      buildLinuxSystemdInstallScript({ installDir }),
-      { mode: 0o755 },
-    );
+    // 9. Génération des lanceurs, service OS et enregistrement dans le PATH
+    let installedPathTarget = null;
+    let pathNeedsReload = false;
 
-    fs.writeFileSync(path.join(installDir, 'factorealm-start.cmd'), buildWindowsStartCmd({ installDir }));
-    fs.writeFileSync(path.join(installDir, 'factorealm-start.ps1'), buildWindowsStartPs1({ installDir }));
-    fs.writeFileSync(
-      path.join(installDir, 'register-windows-task.ps1'),
-      buildWindowsRegisterTaskPs1({ installDir, dataDir }),
-    );
-    fs.writeFileSync(
-      path.join(installDir, 'unregister-windows-task.ps1'),
-      buildWindowsUnregisterTaskPs1({}),
-    );
-    const createShortcutPath = path.join(installDir, 'create-start-menu-shortcut.ps1');
-    fs.writeFileSync(
-      createShortcutPath,
-      buildWindowsStartMenuShortcutPs1({ installDir, port }),
-    );
-    fs.writeFileSync(
-      path.join(installDir, 'remove-start-menu-shortcut.ps1'),
-      buildWindowsRemoveStartMenuShortcutPs1(),
-    );
+    if (!isWin) {
+      const cliEntry = path.join(installDir, 'bin', 'factorealm.mjs');
+      if (fs.existsSync(cliEntry)) {
+        fs.chmodSync(cliEntry, 0o755);
+      }
 
-    if (isWin && !opts.skipShortcuts) {
-      try {
-        runCmd(
-          'powershell.exe',
-          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', createShortcutPath],
+      const linuxStartPath = path.join(installDir, 'factorealm-start.sh');
+      fs.writeFileSync(linuxStartPath, buildLinuxStartScript({ installDir }), { mode: 0o755 });
+      fs.writeFileSync(
+        path.join(installDir, 'factorealm.service'),
+        buildLinuxSystemdUnit({
           installDir,
-        );
-      } catch (shortcutErr) {
-        console.warn(`Avertissement raccourci menu Démarrer : ${(shortcutErr).message}`);
+          envFilePath: envPath,
+          nodeBinPath: process.execPath,
+          userName: os.userInfo().username,
+        }),
+      );
+      fs.writeFileSync(
+        path.join(installDir, 'install-systemd.sh'),
+        buildLinuxSystemdInstallScript({ installDir }),
+        { mode: 0o755 },
+      );
+
+      if (!opts.skipPath) {
+        const wrapperContent = buildLinuxCliWrapper({ installDir });
+        const customBinDir = process.env.FACTOREALM_BIN_DIR?.trim();
+        const candidateDirs = customBinDir
+          ? [customBinDir]
+          : ['/usr/local/bin', path.join(os.homedir(), '.local', 'bin')];
+
+        for (const binDir of candidateDirs) {
+          try {
+            fs.mkdirSync(binDir, { recursive: true });
+            const targetBin = path.join(binDir, 'factorealm');
+            fs.writeFileSync(targetBin, wrapperContent, { mode: 0o755 });
+            installedPathTarget = targetBin;
+            if (!customBinDir && binDir !== '/usr/local/bin') {
+              const pathParts = (process.env.PATH ?? '').split(':');
+              if (!pathParts.includes(binDir)) {
+                const exportLine = 'export PATH="$HOME/.local/bin:$PATH"';
+                for (const rcName of ['.bashrc', '.profile']) {
+                  const rcPath = path.join(os.homedir(), rcName);
+                  if (fs.existsSync(rcPath) || rcName === '.profile') {
+                    const currentRc = fs.existsSync(rcPath) ? fs.readFileSync(rcPath, 'utf8') : '';
+                    if (!currentRc.includes('.local/bin')) {
+                      fs.appendFileSync(rcPath, `\n# Ajouté par l'installateur Factorealm\n${exportLine}\n`);
+                    }
+                  }
+                }
+                pathNeedsReload = true;
+              }
+            }
+            break;
+          } catch {
+            // Essayer le dossier suivant (ex. ~/.local/bin si /usr/local/bin non inscriptible)
+          }
+        }
+      }
+    } else {
+      fs.writeFileSync(path.join(installDir, 'factorealm-start.cmd'), buildWindowsStartCmd({ installDir }));
+      fs.writeFileSync(path.join(installDir, 'factorealm-start.ps1'), buildWindowsStartPs1({ installDir }));
+      fs.writeFileSync(
+        path.join(installDir, 'register-windows-task.ps1'),
+        buildWindowsRegisterTaskPs1({ installDir, dataDir }),
+      );
+      fs.writeFileSync(
+        path.join(installDir, 'unregister-windows-task.ps1'),
+        buildWindowsUnregisterTaskPs1({}),
+      );
+      const createShortcutPath = path.join(installDir, 'create-start-menu-shortcut.ps1');
+      fs.writeFileSync(
+        createShortcutPath,
+        buildWindowsStartMenuShortcutPs1({ installDir, port }),
+      );
+      fs.writeFileSync(
+        path.join(installDir, 'remove-start-menu-shortcut.ps1'),
+        buildWindowsRemoveStartMenuShortcutPs1(),
+      );
+
+      const binDir = path.join(installDir, 'bin');
+      const addToPathScript = path.join(installDir, 'add-to-path.ps1');
+      fs.writeFileSync(addToPathScript, buildWindowsAddToPathPs1({ binDir }));
+      fs.writeFileSync(
+        path.join(installDir, 'remove-from-path.ps1'),
+        buildWindowsRemoveFromPathPs1({ binDir }),
+      );
+
+      if (!opts.skipShortcuts) {
+        try {
+          runCmd(
+            'powershell.exe',
+            ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', createShortcutPath],
+            installDir,
+          );
+        } catch (shortcutErr) {
+          console.warn(`Avertissement raccourci menu Démarrer : ${(shortcutErr).message}`);
+        }
+      }
+
+      if (!opts.skipPath) {
+        try {
+          runCmd(
+            'powershell.exe',
+            ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', addToPathScript],
+            installDir,
+          );
+          installedPathTarget = binDir;
+          pathNeedsReload = true;
+        } catch (pathErr) {
+          console.warn(`Avertissement ajout au PATH Windows : ${(pathErr).message}`);
+        }
       }
     }
 
@@ -458,6 +568,9 @@ async function main() {
     console.log(`  Données         : ${dataDir}`);
     console.log(`  Configuration   : ${envPath}`);
     console.log(`  URL locale      : http://${displayUrlHost}:${port}`);
+    if (installedPathTarget) {
+      console.log(`  CLI PATH        : ${installedPathTarget}`);
+    }
 
     if (recoveryResult?.alreadyInitialized) {
       console.log(`  Entreprise      : déjà initialisée (${recoveryResult.companyName})`);
@@ -470,15 +583,23 @@ async function main() {
       console.log('  Notez cette clé hors ligne dès maintenant.');
     }
 
-    console.log('\n  Démarrer manuellement :');
-    if (isWin) {
-      console.log(`    PowerShell : cd "${installDir}"; npm.cmd run start`);
-      console.log(`    Service    : (Admin PowerShell) .\\register-windows-task.ps1`);
-    } else {
-      console.log(`    Bash       : cd "${installDir}" && npm run start`);
-      console.log(`    Systemd    : sudo bash "${installDir}/install-systemd.sh"`);
+    console.log('\n  Commandes disponibles (depuis un terminal) :');
+    console.log('    factorealm start    — Démarrer le serveur en arrière-plan');
+    console.log('    factorealm stop     — Arrêter le serveur');
+    console.log('    factorealm restart  — Redémarrer le serveur');
+    console.log('    factorealm status   — Vérifier l\'état, le PID et le port');
+    if (pathNeedsReload) {
+      console.log(
+        isWin
+          ? '  Note : ouvrez un nouveau terminal PowerShell/CMD pour recharger le PATH.'
+          : '  Note : ouvrez un nouveau terminal (ou lancez `source ~/.profile`) pour activer ~/.local/bin.',
+      );
     }
-    console.log('  Arrêter : Ctrl+C (manuel) ou systemctl stop factorealm (Linux systemd)');
+    if (!isWin) {
+      console.log(`  Service systemd : sudo bash "${installDir}/install-systemd.sh"`);
+    } else {
+      console.log('  Service Windows : (Admin PowerShell) .\\register-windows-task.ps1');
+    }
     console.log('============================================================\n');
   } finally {
     rl?.close();

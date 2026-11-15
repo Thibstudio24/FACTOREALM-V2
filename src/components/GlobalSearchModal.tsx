@@ -22,6 +22,7 @@ interface SearchResults {
     status: string;
   }>;
   projects: Array<{ id: string; code: string; name: string; client_name: string }>;
+  tickets?: Array<{ id: string; ticket_number: string; title: string; priority: string; status: string }>;
 }
 
 interface GlobalSearchModalProps {
@@ -202,10 +203,37 @@ export function GlobalSearchModal({ open, onClose, onNavigate }: GlobalSearchMod
                   </ul>
                 </div>
               )}
+              {(results.tickets?.length ?? 0) > 0 && (
+                <div>
+                  <h3 className="mb-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">
+                    Tickets informatiques
+                  </h3>
+                  <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {results.tickets!.map((t) => (
+                      <li key={t.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onNavigate('tickets');
+                            onClose();
+                          }}
+                          className="flex w-full items-center justify-between py-2 text-left hover:text-[#0066FF]"
+                        >
+                          <span>
+                            <span className="font-mono font-medium">{t.ticket_number}</span> · {t.title}
+                          </span>
+                          <span className="text-xs text-slate-500">{t.priority} · {t.status}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {results.contacts.length === 0 &&
                 results.documents.length === 0 &&
                 results.bills.length === 0 &&
-                results.projects.length === 0 && (
+                results.projects.length === 0 &&
+                (results.tickets?.length ?? 0) === 0 && (
                   <p className="text-slate-500">Aucun résultat correspondant à « {query} ».</p>
                 )}
             </div>

@@ -3,10 +3,25 @@ import crypto from 'node:crypto';
 /**
  * Hachage de mot de passe via Node crypto.scryptSync (N=16384, r=8, p=1) + sel 16 octets.
  */
-export function hashPassword(password: string): string {
+export function validatePasswordStrength(password: string): void {
   if (password.length < 10) {
     throw new Error('Le mot de passe doit contenir au moins 10 caractères.');
   }
+  const categories = [
+    /[a-z]/.test(password),
+    /[A-Z]/.test(password),
+    /\d/.test(password),
+    /[^A-Za-z0-9]/.test(password),
+  ].filter(Boolean).length;
+  if (categories < 3) {
+    throw new Error(
+      'Le mot de passe doit combiner au moins 3 catégories parmi : minuscules, majuscules, chiffres et caractères spéciaux.',
+    );
+  }
+}
+
+export function hashPassword(password: string): string {
+  validatePasswordStrength(password);
   const salt = crypto.randomBytes(16).toString('hex');
   const derived = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
   return `scrypt$${salt}$${derived}`;
@@ -162,4 +177,17 @@ export function decryptBufferWithPassphrase(
 
 export function sha256Hex(data: Buffer | string): string {
   return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+export function validateSafeLogoDataUrl(raw: unknown): string | null {
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null;
+  const str = String(raw).trim();
+  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/=]+)$/.exec(str);
+  if (!match) {
+    throw new Error('Format de logo invalide. Utilisez uniquement une image PNG ou JPEG.');
+  }
+  if (str.length > 750_000) {
+    throw new Error('Le logo dépasse la taille maximale autorisée (500 Ko).');
+  }
+  return str;
 }

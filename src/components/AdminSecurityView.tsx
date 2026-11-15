@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { AlertTriangle, Download, KeyRound, RotateCcw, Shield, Upload } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, Download, ImagePlus, KeyRound, Laptop, Lock, RotateCcw, Shield, Trash2, Upload } from 'lucide-react';
 import type { CompanyProfile, RoleCode, UserAccount } from '../core/types';
 import { apiFetch, downloadBlobText } from '../lib/apiClient';
 
@@ -15,6 +15,51 @@ interface AdminSecurityViewProps {
   onToggleHighContrast: () => void;
   onRefresh: () => Promise<void>;
   onLoggedOut: () => void;
+}
+
+interface ActiveSessionItem {
+  id: string;
+  userId: string;
+  userName: string;
+  userEmail: string;
+  lastActivityAt: string;
+  expiresAt: string;
+  userAgent: string;
+  createdAt: string;
+  isCurrent: boolean;
+}
+
+function resizeImageFileToPngDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      reject(new Error('Format refusé. Sélectionnez une image PNG, JPEG ou WebP.'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Impossible de lire le fichier image.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Image corrompue ou illisible.'));
+      img.onload = () => {
+        const maxSide = 320;
+        const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Canvas indisponible pour redimensionner le logo.'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = String(reader.result ?? '');
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export function AdminSecurityView({
@@ -34,13 +79,19 @@ export function AdminSecurityView({
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
-  // Profil entreprise
+  // Profil entreprise + Logo + Sécurité + RGPD
   const [compName, setCompName] = useState(company.name);
   const [compSiret, setCompSiret] = useState(company.siret);
   const [compVat, setCompVat] = useState(company.vatNumber);
   const [compAddr, setCompAddr] = useState(company.address);
   const [compCity, setCompCity] = useState(company.city);
   const [compIban, setCompIban] = useState(company.iban);
+  const [compLogo, setCompLogo] = useState<string | null>(company.logoDataUrl ?? null);
+  const [sessionTimeoutMin, setSessionTimeoutMin] = useState(String(company.sessionTimeoutMinutes ?? 15));
+  const [enforce2fa, setEnforce2fa] = useState(Boolean(company.enforce2fa));
+  const [rgpdDpoName, setRgpdDpoName] = useState(company.rgpdDpoName ?? '');
+  const [rgpdDpoEmail, setRgpdDpoEmail] = useState(company.rgpdDpoEmail ?? '');
+  const [rgpdRetentionDays, setRgpdRetentionDays] = useState(String(company.rgpdRetentionDays ?? 3650));
 
   // Utilisateurs & Audit
   const [users, setUsers] = useState<UserAccount[]>([]);
@@ -50,9 +101,13 @@ export function AdminSecurityView({
   const [newUserRole, setNewUserRole] = useState<RoleCode>('gestionnaire');
   const [newUserPass, setNewUserPass] = useState('');
 
-  // TOTP 2FA
+  // TOTP 2FA, Mot de passe & Sessions actives
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUrl: string } | null>(null);
   const [totpCode, setTotpCode] = useState('');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [sessions, setSessions] = useState<ActiveSessionItem[]>([]);
 
   // Sauvegarde & Restauration chiffrée
   const [backupPass, setBackupPass] = useState('');
@@ -79,6 +134,15 @@ export function AdminSecurityView({
 
   const isAdmin = userRole === 'admin';
 
+  const loadSessions = useCallback(async () => {
+    try {
+      const list = await apiFetch<ActiveSessionItem[]>(`/security/sessions${isAdmin ? '?all=1' : ''}`);
+      setSessions(list);
+    } catch {
+      // noop
+    }
+  }, [isAdmin]);
+
   async function loadAdminExtras() {
     if (isAdmin) {
       try {
@@ -96,7 +160,8 @@ export function AdminSecurityView({
 
   useEffect(() => {
     void loadAdminExtras();
-  }, [isAdmin]);
+    void loadSessions();
+  }, [isAdmin, loadSessions]);
 
   return (
     <div className="space-y-6">
@@ -106,7 +171,7 @@ export function AdminSecurityView({
             Administration, Sécurité & Accessibilité
           </h1>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-            Paramètres entreprise · RBAC · 2FA TOTP sans SMS · Sauvegardes chiffrées AES-256-GCM · Audit
+            Logo & profil entreprise · RBAC · 2FA TOTP sans SMS · Expiration & sessions · Sauvegardes AES-256-GCM
           </p>
         </div>
 
@@ -114,7 +179,7 @@ export function AdminSecurityView({
           {(
             [
               ['company', 'Entreprise & Confort'],
-              ['security', '2FA TOTP'],
+              ['security', 'Sécurité & Sessions'],
               ...(isAdmin
                 ? [
                     ['users', 'Comptes & Rôles'],
@@ -214,29 +279,171 @@ export function AdminSecurityView({
                 className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
               />
             </div>
+
+            {/* Logo de l'entreprise */}
+            <div className="rounded-md border border-slate-200 bg-slate-50/70 p-3 space-y-2 dark:border-slate-700 dark:bg-slate-900/60">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                    Logo de l'entreprise (barre de gauche, devis & factures PDF)
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    PNG, JPEG ou WebP — converti localement en PNG sécurisé
+                  </p>
+                </div>
+                {compLogo && isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setCompLogo(null)}
+                    className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-red-600 hover:bg-red-50 dark:border-slate-700 dark:text-red-400"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    Retirer
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white overflow-hidden dark:border-slate-700 dark:bg-slate-950">
+                  {compLogo ? (
+                    <img src={compLogo} alt="Aperçu logo entreprise" className="h-full w-full object-contain p-1" />
+                  ) : (
+                    <ImagePlus className="h-5 w-5 text-slate-400" />
+                  )}
+                </div>
+                {isAdmin && (
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+                    <ImagePlus className="h-3.5 w-3.5 text-[#0066FF]" />
+                    Choisir un logo...
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="sr-only"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setError(null);
+                        try {
+                          const dataUrl = await resizeImageFileToPngDataUrl(file);
+                          setCompLogo(dataUrl);
+                          setInfo('Logo prêt. Cliquez sur Enregistrer les paramètres pour l\'appliquer.');
+                        } catch (err) {
+                          setError((err as Error).message);
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            </div>
+
+            {/* Politique d'expiration de session & RGPD */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+              <div>
+                <label htmlFor="comp-timeout" className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Déconnexion inactivité (minutes)
+                </label>
+                <input
+                  id="comp-timeout"
+                  type="number"
+                  min={1}
+                  max={240}
+                  disabled={!isAdmin}
+                  value={sessionTimeoutMin}
+                  onChange={(e) => setSessionTimeoutMin(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label htmlFor="comp-retention" className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Conservation comptable RGPD (jours)
+                </label>
+                <input
+                  id="comp-retention"
+                  type="number"
+                  min={30}
+                  max={36500}
+                  disabled={!isAdmin}
+                  value={rgpdRetentionDays}
+                  onChange={(e) => setRgpdRetentionDays(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label htmlFor="comp-dpo-name" className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Référent RGPD / DPO
+                </label>
+                <input
+                  id="comp-dpo-name"
+                  disabled={!isAdmin}
+                  placeholder="Nom du responsable"
+                  value={rgpdDpoName}
+                  onChange={(e) => setRgpdDpoName(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+              <div>
+                <label htmlFor="comp-dpo-email" className="block text-xs font-semibold text-slate-600 dark:text-slate-300">
+                  Courriel RGPD / DPO
+                </label>
+                <input
+                  id="comp-dpo-email"
+                  type="email"
+                  disabled={!isAdmin}
+                  placeholder="dpo@entreprise.fr"
+                  value={rgpdDpoEmail}
+                  onChange={(e) => setRgpdDpoEmail(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                />
+              </div>
+            </div>
+
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
+              <input
+                type="checkbox"
+                disabled={!isAdmin}
+                checked={enforce2fa}
+                onChange={(e) => setEnforce2fa(e.target.checked)}
+              />
+              Recommander / imposer la double authentification TOTP à tous les comptes
+            </label>
+
             {isAdmin && (
-              <button
-                type="button"
-                onClick={async () => {
-                  await apiFetch('/company', {
-                    method: 'PUT',
-                    body: JSON.stringify({
-                      ...company,
-                      name: compName,
-                      siret: compSiret,
-                      vatNumber: compVat,
-                      address: compAddr,
-                      city: compCity,
-                      iban: compIban,
-                    }),
-                  });
-                  setInfo('Profil entreprise mis à jour.');
-                  await onRefresh();
-                }}
-                className="rounded-md bg-[#0066FF] px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
-              >
-                Enregistrer les paramètres
-              </button>
+              <div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setError(null);
+                    setInfo(null);
+                    try {
+                      await apiFetch('/company', {
+                        method: 'PUT',
+                        body: JSON.stringify({
+                          ...company,
+                          name: compName,
+                          siret: compSiret,
+                          vatNumber: compVat,
+                          address: compAddr,
+                          city: compCity,
+                          iban: compIban,
+                          logoDataUrl: compLogo,
+                          sessionTimeoutMinutes: Number(sessionTimeoutMin || 15),
+                          enforce2fa,
+                          rgpdDpoName,
+                          rgpdDpoEmail,
+                          rgpdRetentionDays: Number(rgpdRetentionDays || 3650),
+                        }),
+                      });
+                      setInfo('Profil entreprise, logo et paramètres de sécurité mis à jour.');
+                      await onRefresh();
+                    } catch (err) {
+                      setError((err as Error).message);
+                    }
+                  }}
+                  className="rounded-md bg-[#0066FF] px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                >
+                  Enregistrer les paramètres
+                </button>
+              </div>
             )}
           </div>
 
@@ -422,64 +629,217 @@ export function AdminSecurityView({
       )}
 
       {subTab === 'security' && (
-        <div className="rounded-lg border border-slate-200 bg-white p-6 max-w-xl space-y-4 dark:border-slate-800 dark:bg-[#0D1B2E]">
-          <div className="flex items-center gap-2">
-            <KeyRound className="h-5 w-5 text-[#0066FF]" />
-            <h2 className="font-display text-base font-bold text-[#081C3A] dark:text-white">
-              Double authentification TOTP (sans SMS)
-            </h2>
-          </div>
-          <p className="text-sm text-slate-600 dark:text-slate-300">
-            Utilisez une application d'authentification standard (KeePassXC, Bitwarden, FreeOTP) compatible RFC 6238.
-          </p>
-          {!totpSetup ? (
-            <button
-              type="button"
-              onClick={async () => {
-                const res = await apiFetch<{ secret: string; otpauthUrl: string }>('/auth/totp/setup', {
-                  method: 'POST',
-                });
-                setTotpSetup(res);
-              }}
-              className="rounded-md bg-[#0066FF] px-4 py-2 text-xs font-semibold text-white"
-            >
-              Générer une clé secrète TOTP
-            </button>
-          ) : (
-            <div className="space-y-3">
-              <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-xs break-all dark:border-slate-700 dark:bg-slate-900">
-                Secret Base32 : <strong>{totpSetup.secret}</strong>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  aria-label="Code TOTP à 6 chiffres"
-                  placeholder="Code à 6 chiffres"
-                  value={totpCode}
-                  onChange={(e) => setTotpCode(e.target.value)}
-                  className="rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
-                />
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setError(null);
-                    try {
-                      await apiFetch('/auth/totp/verify', {
-                        method: 'POST',
-                        body: JSON.stringify({ code: totpCode }),
-                      });
-                      setInfo('Double authentification TOTP activée.');
-                      setTotpSetup(null);
-                    } catch (err) {
-                      setError((err as Error).message);
-                    }
-                  }}
-                  className="rounded-md bg-[#2DBE8D] px-4 py-1.5 text-xs font-semibold text-[#081C3A]"
-                >
-                  Activer la 2FA
-                </button>
-              </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-white p-6 space-y-4 dark:border-slate-800 dark:bg-[#0D1B2E]">
+            <div className="flex items-center gap-2">
+              <KeyRound className="h-5 w-5 text-[#0066FF]" />
+              <h2 className="font-display text-base font-bold text-[#081C3A] dark:text-white">
+                Double authentification TOTP (sans SMS)
+              </h2>
             </div>
-          )}
+            {company.enforce2fa && !userTotpEnabled && (
+              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs font-medium text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                La politique de l'entreprise exige l'activation de la 2FA TOTP sur votre compte.
+              </div>
+            )}
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              État actuel : <strong>{userTotpEnabled ? 'Active et protégée' : 'Non activée'}</strong>. Utilisez KeePassXC, Bitwarden ou FreeOTP (RFC 6238).
+            </p>
+            {!totpSetup ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  const res = await apiFetch<{ secret: string; otpauthUrl: string }>('/auth/totp/setup', {
+                    method: 'POST',
+                  });
+                  setTotpSetup(res);
+                }}
+                className="rounded-md bg-[#0066FF] px-4 py-2 text-xs font-semibold text-white"
+              >
+                {userTotpEnabled ? 'Reconfigurer la clé secrète TOTP' : 'Générer une clé secrète TOTP'}
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <div className="rounded border border-slate-200 bg-slate-50 p-3 font-mono text-xs break-all dark:border-slate-700 dark:bg-slate-900">
+                  Secret Base32 : <strong>{totpSetup.secret}</strong>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    aria-label="Code TOTP à 6 chiffres"
+                    placeholder="Code à 6 chiffres"
+                    value={totpCode}
+                    onChange={(e) => setTotpCode(e.target.value)}
+                    className="rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setError(null);
+                      try {
+                        await apiFetch('/auth/totp/verify', {
+                          method: 'POST',
+                          body: JSON.stringify({ code: totpCode }),
+                        });
+                        setInfo('Double authentification TOTP activée.');
+                        setTotpSetup(null);
+                        setTotpCode('');
+                        await onRefresh();
+                      } catch (err) {
+                        setError((err as Error).message);
+                      }
+                    }}
+                    className="rounded-md bg-[#2DBE8D] px-4 py-1.5 text-xs font-semibold text-[#081C3A]"
+                  >
+                    Activer la 2FA
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-6 space-y-3 dark:border-slate-800 dark:bg-[#0D1B2E]">
+            <div className="flex items-center gap-2">
+              <Lock className="h-5 w-5 text-[#0066FF]" />
+              <h2 className="font-display text-base font-bold text-[#081C3A] dark:text-white">
+                Modifier mon mot de passe
+              </h2>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Minimum 10 caractères combinant au moins 3 catégories (minuscules, majuscules, chiffres, symboles). Les autres sessions seront révoquées automatiquement.
+            </p>
+            <form
+              className="space-y-2.5"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setError(null);
+                setInfo(null);
+                if (newPassword !== confirmNewPassword) {
+                  setError('La confirmation du nouveau mot de passe ne correspond pas.');
+                  return;
+                }
+                try {
+                  await apiFetch('/auth/change-password', {
+                    method: 'POST',
+                    body: JSON.stringify({ currentPassword, newPassword }),
+                  });
+                  setCurrentPassword('');
+                  setNewPassword('');
+                  setConfirmNewPassword('');
+                  setInfo('Mot de passe mis à jour et autres sessions révoquées.');
+                  await loadSessions();
+                } catch (err) {
+                  setError((err as Error).message);
+                }
+              }}
+            >
+              <input
+                aria-label="Mot de passe actuel"
+                type="password"
+                required
+                placeholder="Mot de passe actuel"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              />
+              <input
+                aria-label="Nouveau mot de passe"
+                type="password"
+                required
+                minLength={10}
+                placeholder="Nouveau mot de passe (10+ car., 3 types)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              />
+              <input
+                aria-label="Confirmer nouveau mot de passe"
+                type="password"
+                required
+                placeholder="Confirmer le nouveau mot de passe"
+                value={confirmNewPassword}
+                onChange={(e) => setConfirmNewPassword(e.target.value)}
+                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+              />
+              <button
+                type="submit"
+                className="rounded-md bg-[#081C3A] px-4 py-2 text-xs font-semibold text-white hover:bg-slate-900 dark:bg-[#0066FF]"
+              >
+                Mettre à jour le mot de passe
+              </button>
+            </form>
+          </div>
+
+          <div className="lg:col-span-2 rounded-lg border border-slate-200 bg-white p-5 space-y-3 dark:border-slate-800 dark:bg-[#0D1B2E]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Laptop className="h-5 w-5 text-[#2DBE8D]" />
+                <div>
+                  <h2 className="font-display text-base font-bold text-[#081C3A] dark:text-white">
+                    Sessions actives ({sessions.length})
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Expiration automatique après {company.sessionTimeoutMinutes ?? 15} min d'inactivité ou à la fermeture du navigateur.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  await apiFetch('/auth/logout-all', { method: 'POST' });
+                  sessionStorage.removeItem('fr_window_session');
+                  onLoggedOut();
+                }}
+                className="rounded-md border border-red-300 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300"
+              >
+                Déconnecter toutes mes sessions
+              </button>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-500 dark:border-slate-800">
+                    <th className="py-2 pr-3">Utilisateur</th>
+                    <th className="py-2 pr-3">Dernière activité</th>
+                    <th className="py-2 pr-3">Navigateur / Poste</th>
+                    <th className="py-2 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {sessions.map((s) => (
+                    <tr key={s.id}>
+                      <td className="py-2 pr-3">
+                        <span className="font-medium">{s.userName}</span>
+                        {s.isCurrent && (
+                          <span className="ml-2 rounded bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold text-[#0066FF] dark:bg-blue-950/60">
+                            Session actuelle
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 font-mono">{s.lastActivityAt.slice(0, 19).replace('T', ' ')}</td>
+                      <td className="py-2 pr-3 text-slate-500 truncate max-w-[260px]">{s.userAgent || 'Navigateur local'}</td>
+                      <td className="py-2 text-right">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await apiFetch(`/security/sessions/${s.id}`, { method: 'DELETE' });
+                            if (s.isCurrent) {
+                              sessionStorage.removeItem('fr_window_session');
+                              onLoggedOut();
+                            } else {
+                              await loadSessions();
+                            }
+                          }}
+                          className="text-xs font-semibold text-red-600 hover:underline dark:text-red-400"
+                        >
+                          Révoquer
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 

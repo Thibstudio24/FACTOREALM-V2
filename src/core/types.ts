@@ -21,7 +21,11 @@ export type Permission =
   | 'projects:write'
   | 'backups:manage'
   | 'export:full'
-  | 'audit:read';
+  | 'audit:read'
+  | 'tickets:read'
+  | 'tickets:create'
+  | 'tickets:manage'
+  | 'rgpd:manage';
 
 export type ContactType = 'client' | 'fournisseur' | 'les_deux';
 
@@ -66,6 +70,11 @@ export interface CompanyProfile {
   accentColor: string;
   logoDataUrl: string | null;
   fiscalYearStartMonth: number;
+  sessionTimeoutMinutes: number;
+  enforce2fa: boolean;
+  rgpdDpoName: string;
+  rgpdDpoEmail: string;
+  rgpdRetentionDays: number;
   isDemo: boolean;
 }
 
@@ -320,4 +329,37 @@ export interface TimeEntry {
   description: string;
   billable: boolean;
   billedDocumentId: string | null;
+}
+
+export type TicketCategory = 'incident' | 'demande' | 'acces' | 'materiel' | 'logiciel' | 'autre';
+export type TicketPriority = 'basse' | 'normale' | 'haute' | 'critique';
+export type TicketStatus = 'ouvert' | 'en_cours' | 'en_attente' | 'resolu' | 'ferme';
+
+export interface SupportTicketComment {
+  id: string;
+  ticketId: string;
+  authorUserId: string;
+  authorName: string;
+  body: string;
+  isInternal: boolean;
+  createdAt: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  ticketNumber: string;
+  title: string;
+  description: string;
+  category: TicketCategory;
+  priority: TicketPriority;
+  status: TicketStatus;
+  requesterUserId: string;
+  requesterName: string;
+  assigneeUserId: string | null;
+  assigneeName: string;
+  resolutionNote: string;
+  createdAt: string;
+  updatedAt: string;
+  resolvedAt: string | null;
+  comments: SupportTicketComment[];
 }

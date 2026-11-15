@@ -30,6 +30,10 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     'backups:manage',
     'export:full',
     'audit:read',
+    'tickets:read',
+    'tickets:create',
+    'tickets:manage',
+    'rgpd:manage',
   ],
   gestionnaire: [
     'contacts:read',
@@ -46,6 +50,9 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     'accounting:read',
     'projects:read',
     'projects:write',
+    'tickets:read',
+    'tickets:create',
+    'tickets:manage',
   ],
   salarie: [
     'contacts:read',
@@ -53,6 +60,8 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     'expenses:create',
     'projects:read',
     'projects:write',
+    'tickets:read',
+    'tickets:create',
   ],
   comptable: [
     'contacts:read',
@@ -63,6 +72,8 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     'accounting:write',
     'accounting:close',
     'audit:read',
+    'tickets:read',
+    'tickets:create',
   ],
 };
 

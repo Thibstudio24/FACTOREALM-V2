@@ -299,3 +299,233 @@ test('Réinitialisation entreprise réservée aux administrateurs (RBAC, mot de 
     await srv.close();
   }
 });
+
+test('Logo entreprise (PNG/PDF), Tickets IT, Conformité RGPD et sécurité avancée (sessions, inactivité, verrouillage)', async () => {
+  const srv = await createTestServer();
+  const tinyPng =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+  try {
+    // 1. Initialisation admin
+    const initRes = await fetch(`${srv.baseUrl}/setup/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        companyName: 'Atelier Test RGPD SAS',
+        legalForm: 'SAS',
+        siret: '73282932000074',
+        adminName: 'Claire Admin',
+        adminEmail: 'claire@atelier-rgpd.fr',
+        adminPassword: 'AdminRgpdPass2026!',
+      }),
+    });
+    assert.equal(initRes.status, 201);
+    const adminCookie = (initRes.headers.get('set-cookie') ?? '').split(';')[0];
+
+    // 2. Logo PNG valide accepté, SVG rejeté, et PDF généré avec logo embarqué
+    const companyRes = await fetch(`${srv.baseUrl}/company`, { headers: { Cookie: adminCookie } });
+    const company = await companyRes.json();
+
+    const badLogoRes = await fetch(`${srv.baseUrl}/company`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ ...company, logoDataUrl: 'data:image/svg+xml;base64,PHN2Zz4=' }),
+    });
+    assert.equal(badLogoRes.status, 400);
+
+    const goodLogoRes = await fetch(`${srv.baseUrl}/company`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        ...company,
+        logoDataUrl: tinyPng,
+        sessionTimeoutMinutes: 10,
+        rgpdDpoName: 'DPO Interne',
+        rgpdDpoEmail: 'dpo@atelier-rgpd.fr',
+        rgpdRetentionDays: 3650,
+      }),
+    });
+    assert.equal(goodLogoRes.status, 200);
+    const updatedCompany = await goodLogoRes.json();
+    assert.equal(updatedCompany.logoDataUrl, tinyPng);
+    assert.equal(updatedCompany.sessionTimeoutMinutes, 10);
+
+    // Créer contact + facture + PDF avec logo
+    const contact = await fetch(`${srv.baseUrl}/contacts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        type: 'client',
+        companyName: 'Client RGPD SARL',
+        email: 'contact@client-rgpd.fr',
+        city: 'Lyon',
+      }),
+    }).then((r) => r.json());
+
+    const draftDoc = await fetch(`${srv.baseUrl}/documents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        kind: 'facture',
+        title: 'Prestation Sécurité',
+        contactId: contact.id,
+        issueDate: '2026-11-15',
+        lines: [
+          { label: 'Audit', quantity: '1', unit: 'forfait', unitPriceEur: '500,00', discountBps: 0, vatRateBps: 2000 },
+        ],
+      }),
+    }).then((r) => r.json());
+
+    const finalizedDoc = await fetch(`${srv.baseUrl}/documents/${draftDoc.id}/finalize`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie },
+    }).then((r) => r.json());
+    assert.equal(finalizedDoc.status, 'finalise');
+
+    const pdfWithLogoRes = await fetch(`${srv.baseUrl}/documents/${finalizedDoc.id}/pdf`, {
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(pdfWithLogoRes.status, 200);
+    const pdfBuf = Buffer.from(await pdfWithLogoRes.arrayBuffer());
+    assert.equal(pdfBuf.subarray(0, 5).toString('utf8'), '%PDF-');
+
+    // 3. Créer un utilisateur salarié pour tester les tickets IT & RBAC notes internes
+    const createEmpRes = await fetch(`${srv.baseUrl}/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        email: 'salarie@atelier-rgpd.fr',
+        fullName: 'Marc Salarié',
+        role: 'salarie',
+        password: 'SalariePass2026!',
+      }),
+    });
+    assert.equal(createEmpRes.status, 201);
+
+    const loginEmpRes = await fetch(`${srv.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'salarie@atelier-rgpd.fr', password: 'SalariePass2026!' }),
+    });
+    assert.equal(loginEmpRes.status, 200);
+    const empCookie = (loginEmpRes.headers.get('set-cookie') ?? '').split(';')[0];
+
+    // Le salarié ouvre un ticket IT
+    const ticketCreateRes = await fetch(`${srv.baseUrl}/tickets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: empCookie },
+      body: JSON.stringify({
+        title: 'Accès imprimante compta impossible',
+        description: 'Erreur spooler sur poste 04',
+        category: 'materiel',
+        priority: 'haute',
+      }),
+    });
+    assert.equal(ticketCreateRes.status, 201);
+    const ticket = await ticketCreateRes.json();
+    assert.match(ticket.ticketNumber, /^TCK-\d{4}-0001$/);
+
+    // L'admin répond en commentaire public ET ajoute une note interne
+    const adminCommentRes = await fetch(`${srv.baseUrl}/tickets/${ticket.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ body: 'Redémarrage du serveur d\'impression effectué.', isInternal: false }),
+    });
+    assert.equal(adminCommentRes.status, 201);
+
+    const adminInternalRes = await fetch(`${srv.baseUrl}/tickets/${ticket.id}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ body: 'Note tech interne : IP imprimante 192.168.1.44', isInternal: true }),
+    });
+    assert.equal(adminInternalRes.status, 201);
+
+    // Résolution par l'admin
+    const patchTicketRes = await fetch(`${srv.baseUrl}/tickets/${ticket.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({ status: 'resolu', resolutionNote: 'Pilote mis à jour.' }),
+    });
+    assert.equal(patchTicketRes.status, 200);
+    const resolvedTicket = await patchTicketRes.json();
+    assert.equal(resolvedTicket.status, 'resolu');
+    assert.equal(resolvedTicket.comments.length, 2);
+
+    // Le salarié ne doit voir QUE le commentaire public (note interne masquée)
+    const empTicketsList = await fetch(`${srv.baseUrl}/tickets`, { headers: { Cookie: empCookie } }).then((r) => r.json());
+    const empTicket = empTicketsList.tickets.find((t: { id: string }) => t.id === ticket.id);
+    assert.equal(empTicket.comments.length, 1);
+    assert.equal(empTicket.comments[0].isInternal, false);
+
+    // 4. Conformité RGPD : registre Art. 30, export personnel Art. 15/20, anonymisation contact Art. 17
+    const registryRes = await fetch(`${srv.baseUrl}/rgpd/registry`, { headers: { Cookie: adminCookie } });
+    assert.equal(registryRes.status, 200);
+    const registry = await registryRes.json();
+    assert.equal(registry.controller.dpoName, 'DPO Interne');
+    assert.ok(Array.isArray(registry.processingActivities) && registry.processingActivities.length >= 4);
+
+    const meExport = await fetch(`${srv.baseUrl}/rgpd/export/me`, { headers: { Cookie: empCookie } }).then((r) => r.json());
+    assert.equal(meExport.tickets.length, 1);
+
+    const contactExport = await fetch(`${srv.baseUrl}/rgpd/export/contact/${contact.id}`, {
+      headers: { Cookie: adminCookie },
+    }).then((r) => r.json());
+    assert.equal(contactExport.documents.length, 1);
+
+    const anonRes = await fetch(`${srv.baseUrl}/rgpd/anonymize-contact/${contact.id}`, {
+      method: 'POST',
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(anonRes.status, 200);
+
+    // La facture finalisée demeure intacte (Art. L123-22), le contact actif est anonymisé/masqué
+    const contactsAfter = await fetch(`${srv.baseUrl}/contacts`, { headers: { Cookie: adminCookie } }).then((r) => r.json());
+    assert.equal(contactsAfter.length, 0);
+    const docsAfter = await fetch(`${srv.baseUrl}/documents`, { headers: { Cookie: adminCookie } }).then((r) => r.json());
+    assert.equal(docsAfter.length, 1);
+    assert.equal(docsAfter[0].number, finalizedDoc.number);
+
+    // 5. Sécurité : sessions actives, changement de mot de passe, expiration inactivité & verrouillage 5 échecs
+    const sessionsBefore = await fetch(`${srv.baseUrl}/security/sessions?all=1`, {
+      headers: { Cookie: adminCookie },
+    }).then((r) => r.json());
+    assert.ok(sessionsBefore.length >= 2);
+
+    // Vieillir artificiellement la session salarié de 20 min (> 10 min configurées) -> doit expirer (401)
+    const twentyMinAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+    srv.ctx.db
+      .prepare("UPDATE sessions SET last_activity_at = ? WHERE user_id IN (SELECT id FROM users WHERE email = 'salarie@atelier-rgpd.fr')")
+      .run(twentyMinAgo);
+    const expiredEmpCheck = await fetch(`${srv.baseUrl}/auth/me`, { headers: { Cookie: empCookie } });
+    assert.equal(expiredEmpCheck.status, 401);
+
+    // Changement mot de passe admin
+    const chgPwRes = await fetch(`${srv.baseUrl}/auth/change-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        currentPassword: 'AdminRgpdPass2026!',
+        newPassword: 'NouveauAdminRgpd2026!',
+      }),
+    });
+    assert.equal(chgPwRes.status, 200);
+
+    // Verrouillage anti-brute-force après 5 échecs sur un compte
+    for (let i = 0; i < 5; i++) {
+      const failRes = await fetch(`${srv.baseUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'salarie@atelier-rgpd.fr', password: 'MauvaisPassword123!' }),
+      });
+      assert.equal(failRes.status, 401);
+    }
+    const lockedRes = await fetch(`${srv.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'salarie@atelier-rgpd.fr', password: 'SalariePass2026!' }),
+    });
+    assert.equal(lockedRes.status, 429);
+  } finally {
+    await srv.close();
+  }
+});

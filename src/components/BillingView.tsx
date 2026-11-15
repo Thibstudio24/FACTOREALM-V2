@@ -18,6 +18,8 @@ interface BillingViewProps {
   contacts: Contact[];
   catalog: CatalogItem[];
   bankAccounts: BankAccount[];
+  companyName?: string;
+  companyLogoDataUrl?: string | null;
   onRefresh: () => Promise<void>;
 }
 
@@ -48,6 +50,8 @@ export function BillingView({
   contacts,
   catalog,
   bankAccounts,
+  companyName,
+  companyLogoDataUrl,
   onRefresh,
 }: BillingViewProps) {
   const [kindFilter, setKindFilter] = useState<'tous' | DocumentKind>('tous');
@@ -568,16 +572,25 @@ export function BillingView({
           ) : (
             <div className="space-y-4">
               <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3 dark:border-slate-800">
-                <div>
-                  <p className="text-xs font-medium text-slate-500">
-                    {activeDoc.kind.toUpperCase()} · {STATUS_LABELS[activeDoc.status]}
-                  </p>
-                  <h2 className="font-display text-lg font-bold text-[#081C3A] dark:text-white">
-                    {activeDoc.number ?? 'Brouillon non numéroté'}
-                  </h2>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">
-                    {activeDoc.contactNameSnapshot} · Émis le {activeDoc.issueDate}
-                  </p>
+                <div className="flex items-start gap-3 min-w-0">
+                  {companyLogoDataUrl && (
+                    <img
+                      src={companyLogoDataUrl}
+                      alt={companyName ? `Logo ${companyName}` : 'Logo entreprise'}
+                      className="h-11 w-11 shrink-0 rounded-md border border-slate-200 bg-white object-contain p-1 dark:border-slate-700"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-slate-500">
+                      {activeDoc.kind.toUpperCase()} · {STATUS_LABELS[activeDoc.status]}
+                    </p>
+                    <h2 className="font-display text-lg font-bold text-[#081C3A] dark:text-white">
+                      {activeDoc.number ?? 'Brouillon non numéroté'}
+                    </h2>
+                    <p className="text-xs text-slate-600 dark:text-slate-300">
+                      {activeDoc.contactNameSnapshot} · Émis le {activeDoc.issueDate}
+                    </p>
+                  </div>
                 </div>
                 <a
                   href={`/api/v1/documents/${activeDoc.id}/pdf`}

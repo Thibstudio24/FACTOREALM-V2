@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Copy, Check, KeyRound, ShieldCheck, Sun, Moon } from 'lucide-react';
+import { Copy, Check, ExternalLink, KeyRound, ShieldCheck, Sun, Moon, X } from 'lucide-react';
 import { apiFetch, downloadBlobText } from '../lib/apiClient';
 import { LogoMark } from './LogoMark';
 
@@ -20,6 +20,7 @@ export function SetupAndAuth({
 }: SetupAndAuthProps) {
   const [setupMode, setSetupMode] = useState<'real' | 'demo'>('real');
   const [authTab, setAuthTab] = useState<'login' | 'recover'>('login');
+  const [legalModal, setLegalModal] = useState<'rgpd' | 'license' | null>(null);
 
   // Setup fields
   const [compName, setCompName] = useState('');
@@ -79,6 +80,7 @@ export function SetupAndAuth({
         method: 'POST',
         body: JSON.stringify(payload),
       });
+      sessionStorage.setItem('fr_window_session', '1');
       setIssuedRecoveryKey(res.recoveryKey);
     } catch (err) {
       setError((err as Error).message);
@@ -92,7 +94,7 @@ export function SetupAndAuth({
     setError(null);
     setSubmitting(true);
     try {
-      const res = await apiFetch<{ ok?: boolean; requires2fa?: boolean }>('/auth/login', {
+      const res = await apiFetch<{ ok?: boolean; requires2fa?: boolean; requires2faSetup?: boolean }>('/auth/login', {
         method: 'POST',
         body: JSON.stringify({
           email: loginEmail,
@@ -105,6 +107,7 @@ export function SetupAndAuth({
         setInfo('Saisissez le code à 6 chiffres généré par votre application TOTP.');
         return;
       }
+      sessionStorage.setItem('fr_window_session', '1');
       onAuthenticated();
     } catch (err) {
       setError((err as Error).message);
@@ -193,7 +196,10 @@ export function SetupAndAuth({
             </button>
             <button
               type="button"
-              onClick={onAuthenticated}
+              onClick={() => {
+                sessionStorage.setItem('fr_window_session', '1');
+                onAuthenticated();
+              }}
               className="ml-auto rounded-md bg-[#0066FF] px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
             >
               Accéder à Factorealm
@@ -597,7 +603,85 @@ export function SetupAndAuth({
             </>
           )}
         </div>
+
+        <footer className="mt-4 flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500 dark:text-slate-400">
+          <span>
+            Factorealm · by{' '}
+            <a
+              href="https://github.com/Thibstudio24"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 font-semibold text-[#0066FF] hover:underline"
+            >
+              Thibstudio
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </span>
+          <div className="flex items-center gap-4">
+            <button type="button" onClick={() => setLegalModal('rgpd')} className="hover:underline">
+              Confidentialité & RGPD
+            </button>
+            <button type="button" onClick={() => setLegalModal('license')} className="hover:underline">
+              Licence AGPL-3.0
+            </button>
+          </div>
+        </footer>
       </div>
+
+      {legalModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={legalModal === 'rgpd' ? 'Politique de confidentialité et RGPD' : 'Licence GNU AGPL-3.0'}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4"
+        >
+          <div className="w-full max-w-lg rounded-lg border border-slate-200 bg-white p-6 shadow-xl space-y-3 dark:border-slate-700 dark:bg-[#0D1B2E]">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-lg font-bold text-[#081C3A] dark:text-white">
+                {legalModal === 'rgpd' ? 'Confidentialité & Conformité RGPD' : 'Licence libre GNU AGPL-3.0'}
+              </h2>
+              <button
+                type="button"
+                aria-label="Fermer la fenêtre légale"
+                onClick={() => setLegalModal(null)}
+                className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            {legalModal === 'rgpd' ? (
+              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <p>
+                  Factorealm héberge vos données exclusivement sur votre serveur local sans télémétrie ni transfert tiers.
+                </p>
+                <p>
+                  Un cookie de session HttpOnly strictement technique (<code>fr_session</code>) assure l'authentification et expire automatiquement à la fermeture du navigateur ou après inactivité.
+                </p>
+                <p>
+                  Une fois connecté, le module <strong>RGPD & Documentation</strong> permet l'export JSON (Art. 15/20), la consultation du registre Article 30 et l'anonymisation des contacts (Art. 17).
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                <p>
+                  Copyright (C) 2026 <strong>Thibstudio</strong> —{' '}
+                  <a
+                    href="https://github.com/Thibstudio24"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-[#0066FF] hover:underline"
+                  >
+                    https://github.com/Thibstudio24
+                  </a>
+                </p>
+                <p>
+                  Distribué sous licence <strong>GNU Affero General Public License v3.0 (AGPL-3.0)</strong>. Vous êtes libre d'utiliser, d'étudier, de modifier et de redistribuer ce logiciel sous les mêmes termes.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

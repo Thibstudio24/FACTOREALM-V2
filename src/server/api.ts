@@ -25,6 +25,7 @@ import {
   generateTotpSecret,
   hashPassword,
   sha256Hex,
+  validateSafeLogoDataUrl,
   verifyPassword,
   verifyRecoveryKey,
   verifyTotpCode,
@@ -40,6 +41,11 @@ import type {
   JournalEntry,
   Permission,
   RoleCode,
+  SupportTicket,
+  SupportTicketComment,
+  TicketCategory,
+  TicketPriority,
+  TicketStatus,
 } from '../core/types';
 import { createEncryptedBackup, restoreEncryptedBackup } from './backup';
 import { newId, safeUploadPath, withTransaction, type DbContext } from './db';
@@ -83,6 +89,7 @@ export function createApiRouter(ctx: DbContext): express.Router {
   const router = express.Router();
   const { db, uploadDir } = ctx;
   const authAttempts = new Map<string, { count: number; resetAt: number }>();
+  const failedLogins = new Map<string, { count: number; lockUntil: number }>();
 
   function checkRateLimit(ip: string): boolean {
     const now = Date.now();
@@ -118,20 +125,24 @@ export function createApiRouter(ctx: DbContext): express.Router {
     );
   }
 
-  function createSessionForUser(res: Response, userId: string): void {
+  function createSessionForUser(res: Response, userId: string, req?: Request): void {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = sha256Hex(rawToken);
     const sessionId = newId('ses');
     const now = new Date();
+    const nowIso = now.toISOString();
     const expires = new Date(now.getTime() + 12 * 60 * 60 * 1000);
+    const userAgent = String(req?.headers['user-agent'] ?? '').slice(0, 180);
     db.prepare(
-      `INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
-    ).run(sessionId, userId, tokenHash, expires.toISOString(), now.toISOString());
+      `INSERT INTO sessions (id, user_id, token_hash, expires_at, last_activity_at, user_agent, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(sessionId, userId, tokenHash, expires.toISOString(), nowIso, userAgent, nowIso);
+    // Cookie de session navigateur (sans maxAge) pour fermer la session à la fermeture du navigateur
     res.cookie(SESSION_COOKIE, rawToken, {
       httpOnly: true,
       sameSite: 'lax',
       path: '/',
-      maxAge: 12 * 60 * 60 * 1000,
+      ...(process.env.NODE_ENV === 'production' && req?.secure ? { secure: true } : {}),
     });
   }
 
@@ -159,8 +170,26 @@ export function createApiRouter(ctx: DbContext): express.Router {
       accentColor: String(r.accent_color),
       logoDataUrl: r.logo_data_url ? String(r.logo_data_url) : null,
       fiscalYearStartMonth: Number(r.fiscal_year_start_month),
+      sessionTimeoutMinutes: Math.max(1, Number(r.session_timeout_minutes ?? 15)),
+      enforce2fa: Boolean(r.enforce_2fa ?? 0),
+      rgpdDpoName: String(r.rgpd_dpo_name ?? ''),
+      rgpdDpoEmail: String(r.rgpd_dpo_email ?? ''),
+      rgpdRetentionDays: Math.max(30, Number(r.rgpd_retention_days ?? 3650)),
       isDemo: Boolean(r.is_demo),
     };
+  }
+
+  function isSessionFresh(row: Record<string, unknown>, company: CompanyProfile | null): boolean {
+    if (Number(row.is_active) !== 1) return false;
+    const nowMs = Date.now();
+    if (new Date(String(row.expires_at)).getTime() < nowMs) return false;
+    const timeoutMin = Math.max(1, company?.sessionTimeoutMinutes ?? 15);
+    const lastAct = String(row.last_activity_at || row.created_at || '');
+    if (lastAct) {
+      const idleMs = nowMs - new Date(lastAct).getTime();
+      if (idleMs > timeoutMin * 60_000) return false;
+    }
+    return true;
   }
 
   function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
@@ -173,15 +202,26 @@ export function createApiRouter(ctx: DbContext): express.Router {
     const tokenHash = sha256Hex(token);
     const row = db
       .prepare(
-        `SELECT s.id AS sid, s.expires_at, u.id, u.email, u.full_name, u.role, u.totp_enabled, u.is_active, u.accounting_scope_note
+        `SELECT s.id AS sid, s.expires_at, s.last_activity_at, s.created_at,
+                u.id, u.email, u.full_name, u.role, u.totp_enabled, u.is_active, u.accounting_scope_note
          FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
       )
       .get(tokenHash) as Record<string, unknown> | undefined;
 
-    if (!row || Number(row.is_active) !== 1 || new Date(String(row.expires_at)).getTime() < Date.now()) {
-      res.status(401).json({ error: 'Session expirée ou invalide.' });
+    const company = getCompanyRow();
+    if (!row || !isSessionFresh(row, company)) {
+      if (row) {
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(String(row.sid));
+      }
+      res.clearCookie(SESSION_COOKIE, { path: '/' });
+      res.status(401).json({ error: 'Session expirée pour inactivité ou déconnexion requise.' });
       return;
     }
+
+    db.prepare('UPDATE sessions SET last_activity_at = ? WHERE id = ?').run(
+      new Date().toISOString(),
+      String(row.sid),
+    );
 
     req.sessionId = String(row.sid);
     req.user = {
@@ -371,17 +411,22 @@ export function createApiRouter(ctx: DbContext): express.Router {
       const tokenHash = sha256Hex(token);
       const row = db
         .prepare(
-          `SELECT s.expires_at, u.is_active FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
+          `SELECT s.id AS sid, s.expires_at, s.last_activity_at, s.created_at, u.is_active
+           FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
         )
-        .get(tokenHash) as { expires_at: string; is_active: number } | undefined;
-      if (row && Number(row.is_active) === 1 && new Date(row.expires_at).getTime() >= Date.now()) {
+        .get(tokenHash) as Record<string, unknown> | undefined;
+      if (row && isSessionFresh(row, company)) {
         authenticated = true;
+      } else if (row) {
+        db.prepare('DELETE FROM sessions WHERE id = ?').run(String(row.sid));
+        res.clearCookie(SESSION_COOKIE, { path: '/' });
       }
     }
     res.json({
       initialized: Boolean(company),
       companyName: company?.name ?? null,
       isDemo: company?.isDemo ?? false,
+      sessionTimeoutMinutes: company?.sessionTimeoutMinutes ?? 15,
       authenticated,
     });
   });
@@ -394,7 +439,7 @@ export function createApiRouter(ctx: DbContext): express.Router {
         return;
       }
       const result = initializeCompanyInDb(db, req.body ?? {});
-      createSessionForUser(res, result.userId);
+      createSessionForUser(res, result.userId, req);
       res.status(201).json({ recoveryKey: result.recoveryKey, companyId: result.companyId });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -417,14 +462,14 @@ export function createApiRouter(ctx: DbContext): express.Router {
       const userRow = db
         .prepare('SELECT id FROM users WHERE email = ?')
         .get(String(adminEmail).trim().toLowerCase()) as { id: string };
-      createSessionForUser(res, userRow.id);
+      createSessionForUser(res, userRow.id, req);
       res.status(201).json(result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
   });
 
-  // --- AUTHENTIFICATION & 2FA TOTP ---
+  // --- AUTHENTIFICATION, VERROUILLAGE & 2FA TOTP ---
 
   router.post('/auth/login', (req, res) => {
     const ip = req.ip ?? 'local';
@@ -433,11 +478,26 @@ export function createApiRouter(ctx: DbContext): express.Router {
       return;
     }
     const { email, password, totpCode } = req.body ?? {};
+    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    const lockRec = failedLogins.get(normalizedEmail);
+    if (lockRec && lockRec.lockUntil > Date.now()) {
+      const mins = Math.max(1, Math.ceil((lockRec.lockUntil - Date.now()) / 60_000));
+      res.status(429).json({ error: `Compte temporairement verrouillé après plusieurs échecs. Réessayez dans ${mins} min.` });
+      return;
+    }
+
     const userRow = db
       .prepare('SELECT * FROM users WHERE email = ? AND is_active = 1')
-      .get(String(email ?? '').trim().toLowerCase()) as Record<string, unknown> | undefined;
+      .get(normalizedEmail) as Record<string, unknown> | undefined;
 
     if (!userRow || !verifyPassword(String(password ?? ''), String(userRow.password_hash))) {
+      const current = failedLogins.get(normalizedEmail) ?? { count: 0, lockUntil: 0 };
+      const nextCount = current.count + 1;
+      const lockUntil = nextCount >= 5 ? Date.now() + 5 * 60_000 : 0;
+      failedLogins.set(normalizedEmail, { count: nextCount, lockUntil });
+      if (lockUntil > 0) {
+        logAudit(undefined, 'AUTH_LOCKOUT', 'user', normalizedEmail, 'Verrouillage temporaire 5 min après 5 échecs');
+      }
       res.status(401).json({ error: 'Identifiants incorrects.' });
       return;
     }
@@ -453,7 +513,10 @@ export function createApiRouter(ctx: DbContext): express.Router {
       }
     }
 
-    createSessionForUser(res, String(userRow.id));
+    failedLogins.delete(normalizedEmail);
+    createSessionForUser(res, String(userRow.id), req);
+    const company = getCompanyRow();
+    const requires2faSetup = Boolean(company?.enforce2fa) && Number(userRow.totp_enabled) !== 1;
     logAudit(
       {
         id: String(userRow.id),
@@ -467,7 +530,7 @@ export function createApiRouter(ctx: DbContext): express.Router {
       'user',
       String(userRow.id),
     );
-    res.json({ ok: true });
+    res.json({ ok: true, requires2faSetup });
   });
 
   router.post('/auth/logout', requireAuth, (req: AuthedRequest, res) => {
@@ -478,37 +541,127 @@ export function createApiRouter(ctx: DbContext): express.Router {
     res.json({ ok: true });
   });
 
+  router.post('/auth/logout-all', requireAuth, (req: AuthedRequest, res) => {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(req.user!.id);
+    logAudit(req.user, 'AUTH_LOGOUT_ALL', 'user', req.user!.id, 'Révocation de toutes les sessions');
+    res.clearCookie(SESSION_COOKIE, { path: '/' });
+    res.json({ ok: true });
+  });
+
+  router.post('/auth/change-password', requireAuth, (req: AuthedRequest, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body ?? {};
+      const row = db
+        .prepare('SELECT password_hash FROM users WHERE id = ?')
+        .get(req.user!.id) as { password_hash: string } | undefined;
+      if (!row || !verifyPassword(String(currentPassword ?? ''), row.password_hash)) {
+        res.status(401).json({ error: 'Mot de passe actuel incorrect.' });
+        return;
+      }
+      const nextHash = hashPassword(String(newPassword ?? ''));
+      withTransaction(db, () => {
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(nextHash, req.user!.id);
+        if (req.sessionId) {
+          db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(req.user!.id, req.sessionId);
+        }
+      });
+      logAudit(req.user, 'AUTH_PASSWORD_CHANGE', 'user', req.user!.id, 'Mot de passe modifié');
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.get('/security/sessions', requireAuth, (req: AuthedRequest, res) => {
+    const showAll = req.query.all === '1' && req.user!.role === 'admin';
+    const rows = (
+      showAll
+        ? db
+            .prepare(
+              `SELECT s.id, s.user_id, u.full_name, u.email, s.last_activity_at, s.expires_at, s.user_agent, s.created_at
+               FROM sessions s JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC`,
+            )
+            .all()
+        : db
+            .prepare(
+              `SELECT s.id, s.user_id, u.full_name, u.email, s.last_activity_at, s.expires_at, s.user_agent, s.created_at
+               FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.user_id = ? ORDER BY s.created_at DESC`,
+            )
+            .all(req.user!.id)
+    ) as Array<Record<string, unknown>>;
+
+    res.json(
+      rows.map((s) => ({
+        id: String(s.id),
+        userId: String(s.user_id),
+        userName: String(s.full_name),
+        userEmail: String(s.email),
+        lastActivityAt: String(s.last_activity_at || s.created_at),
+        expiresAt: String(s.expires_at),
+        userAgent: String(s.user_agent ?? ''),
+        createdAt: String(s.created_at),
+        isCurrent: String(s.id) === req.sessionId,
+      })),
+    );
+  });
+
+  router.delete('/security/sessions/:id', requireAuth, (req: AuthedRequest, res) => {
+    const target = db
+      .prepare('SELECT id, user_id FROM sessions WHERE id = ?')
+      .get(req.params.id) as { id: string; user_id: string } | undefined;
+    if (!target) {
+      res.status(404).json({ error: 'Session introuvable.' });
+      return;
+    }
+    if (target.user_id !== req.user!.id && req.user!.role !== 'admin') {
+      res.status(403).json({ error: 'Révocation refusée.' });
+      return;
+    }
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(target.id);
+    if (target.id === req.sessionId) {
+      res.clearCookie(SESSION_COOKIE, { path: '/' });
+    }
+    logAudit(req.user, 'SESSION_REVOKE', 'session', target.id);
+    res.json({ ok: true });
+  });
+
   router.post('/auth/recover', (req, res) => {
     const ip = req.ip ?? 'local';
     if (!checkRateLimit(ip)) {
       res.status(429).json({ error: 'Trop de tentatives.' });
       return;
     }
-    const { recoveryKey, adminEmail, newPassword } = req.body ?? {};
-    const comp = db.prepare('SELECT id, recovery_key_hash FROM companies LIMIT 1').get() as
-      | { id: string; recovery_key_hash: string }
-      | undefined;
-    if (!comp || !verifyRecoveryKey(String(recoveryKey ?? ''), comp.recovery_key_hash)) {
-      res.status(403).json({ error: 'Clé de récupération entreprise invalide.' });
-      return;
+    try {
+      const { recoveryKey, adminEmail, newPassword } = req.body ?? {};
+      const comp = db.prepare('SELECT id, recovery_key_hash FROM companies LIMIT 1').get() as
+        | { id: string; recovery_key_hash: string }
+        | undefined;
+      if (!comp || !verifyRecoveryKey(String(recoveryKey ?? ''), comp.recovery_key_hash)) {
+        res.status(403).json({ error: 'Clé de récupération entreprise invalide.' });
+        return;
+      }
+      const normalized = String(adminEmail ?? '').trim().toLowerCase();
+      const user = db
+        .prepare("SELECT id, full_name FROM users WHERE email = ? AND role = 'admin'")
+        .get(normalized) as { id: string; full_name: string } | undefined;
+      if (!user) {
+        res.status(404).json({ error: 'Compte administrateur introuvable pour ce courriel.' });
+        return;
+      }
+      const newHash = hashPassword(String(newPassword ?? ''));
+      withTransaction(db, () => {
+        db.prepare('UPDATE users SET password_hash = ?, totp_enabled = 0, totp_secret = NULL WHERE id = ?').run(
+          newHash,
+          user.id,
+        );
+        db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+      });
+      failedLogins.delete(normalized);
+      logAudit(undefined, 'AUTH_RECOVERY_RESET', 'user', user.id, 'Réinitialisation via clé de récupération entreprise');
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
     }
-    const user = db
-      .prepare("SELECT id, full_name FROM users WHERE email = ? AND role = 'admin'")
-      .get(String(adminEmail ?? '').trim().toLowerCase()) as { id: string; full_name: string } | undefined;
-    if (!user) {
-      res.status(404).json({ error: 'Compte administrateur introuvable pour ce courriel.' });
-      return;
-    }
-    const newHash = hashPassword(String(newPassword ?? ''));
-    withTransaction(db, () => {
-      db.prepare('UPDATE users SET password_hash = ?, totp_enabled = 0, totp_secret = NULL WHERE id = ?').run(
-        newHash,
-        user.id,
-      );
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
-    });
-    logAudit(undefined, 'AUTH_RECOVERY_RESET', 'user', user.id, 'Réinitialisation via clé de récupération entreprise');
-    res.json({ ok: true });
   });
 
   router.get('/auth/me', requireAuth, (req: AuthedRequest, res) => {
@@ -552,34 +705,48 @@ export function createApiRouter(ctx: DbContext): express.Router {
   });
 
   router.put('/company', requireAuth, requirePerm('company:write'), (req: AuthedRequest, res) => {
-    const b = req.body ?? {};
-    db.prepare(
-      `UPDATE companies SET
-        name = ?, legal_form = ?, siret = ?, vat_number = ?, naf_code = ?,
-        address = ?, postal_code = ?, city = ?, email = ?, phone = ?,
-        iban = ?, bic = ?, vat_regime = ?, default_payment_terms_days = ?,
-        late_penalty_text = ?, accent_color = ?, logo_data_url = ?`,
-    ).run(
-      String(b.name ?? ''),
-      String(b.legalForm ?? 'SAS'),
-      String(b.siret ?? ''),
-      String(b.vatNumber ?? ''),
-      String(b.nafCode ?? ''),
-      String(b.address ?? ''),
-      String(b.postalCode ?? ''),
-      String(b.city ?? ''),
-      String(b.email ?? ''),
-      String(b.phone ?? ''),
-      String(b.iban ?? ''),
-      String(b.bic ?? ''),
-      String(b.vatRegime ?? 'reel_normal'),
-      Number(b.defaultPaymentTermsDays ?? 30),
-      String(b.latePenaltyText ?? ''),
-      String(b.accentColor ?? '#0066FF'),
-      b.logoDataUrl ? String(b.logoDataUrl) : null,
-    );
-    logAudit(req.user, 'COMPANY_UPDATE', 'company', 'main', String(b.name ?? ''));
-    res.json(getCompanyRow());
+    try {
+      const b = req.body ?? {};
+      const safeLogo = validateSafeLogoDataUrl(b.logoDataUrl);
+      const timeoutMin = Math.min(240, Math.max(1, Math.round(Number(b.sessionTimeoutMinutes ?? 15) || 15)));
+      const retentionDays = Math.min(36500, Math.max(30, Math.round(Number(b.rgpdRetentionDays ?? 3650) || 3650)));
+      db.prepare(
+        `UPDATE companies SET
+          name = ?, legal_form = ?, siret = ?, vat_number = ?, naf_code = ?,
+          address = ?, postal_code = ?, city = ?, email = ?, phone = ?,
+          iban = ?, bic = ?, vat_regime = ?, default_payment_terms_days = ?,
+          late_penalty_text = ?, accent_color = ?, logo_data_url = ?,
+          session_timeout_minutes = ?, enforce_2fa = ?,
+          rgpd_dpo_name = ?, rgpd_dpo_email = ?, rgpd_retention_days = ?`,
+      ).run(
+        String(b.name ?? ''),
+        String(b.legalForm ?? 'SAS'),
+        String(b.siret ?? ''),
+        String(b.vatNumber ?? ''),
+        String(b.nafCode ?? ''),
+        String(b.address ?? ''),
+        String(b.postalCode ?? ''),
+        String(b.city ?? ''),
+        String(b.email ?? ''),
+        String(b.phone ?? ''),
+        String(b.iban ?? ''),
+        String(b.bic ?? ''),
+        String(b.vatRegime ?? 'reel_normal'),
+        Number(b.defaultPaymentTermsDays ?? 30),
+        String(b.latePenaltyText ?? ''),
+        String(b.accentColor ?? '#0066FF'),
+        safeLogo,
+        timeoutMin,
+        b.enforce2fa ? 1 : 0,
+        String(b.rgpdDpoName ?? ''),
+        String(b.rgpdDpoEmail ?? ''),
+        retentionDays,
+      );
+      logAudit(req.user, 'COMPANY_UPDATE', 'company', 'main', String(b.name ?? ''));
+      res.json(getCompanyRow());
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
   });
 
   router.post('/company/reset', requireAuth, requirePerm('company:write'), (req: AuthedRequest, res) => {
@@ -618,6 +785,8 @@ export function createApiRouter(ctx: DbContext): express.Router {
     }
 
     const tablesToClear = [
+      'support_ticket_comments',
+      'support_tickets',
       'audit_logs',
       'time_entries',
       'projects',
@@ -2711,6 +2880,354 @@ export function createApiRouter(ctx: DbContext): express.Router {
     res.status(201).json(hydrateDocument(docId));
   });
 
+  // --- TICKETS INFORMATIQUES (SUPPORT INTERNE) ---
+
+  function allocateTicketNumber(): string {
+    const year = new Date().getFullYear();
+    const row = db
+      .prepare('SELECT last_number FROM sequences WHERE kind = ? AND fiscal_year = ?')
+      .get('ticket', year) as { last_number: number } | undefined;
+    const next = (row?.last_number ?? 0) + 1;
+    if (row) {
+      db.prepare('UPDATE sequences SET last_number = ? WHERE kind = ? AND fiscal_year = ?').run(next, 'ticket', year);
+    } else {
+      db.prepare('INSERT INTO sequences (kind, fiscal_year, last_number) VALUES (?, ?, ?)').run('ticket', year, next);
+    }
+    return `TCK-${year}-${String(next).padStart(4, '0')}`;
+  }
+
+  function hydrateTicket(ticketId: string, includeInternal: boolean): SupportTicket | null {
+    const t = db
+      .prepare('SELECT * FROM support_tickets WHERE id = ?')
+      .get(ticketId) as Record<string, unknown> | undefined;
+    if (!t) return null;
+    const rawComments = db
+      .prepare('SELECT * FROM support_ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC')
+      .all(ticketId) as Array<Record<string, unknown>>;
+    const comments: SupportTicketComment[] = rawComments
+      .filter((c) => includeInternal || Number(c.is_internal) !== 1)
+      .map((c) => ({
+        id: String(c.id),
+        ticketId: String(c.ticket_id),
+        authorUserId: String(c.author_user_id),
+        authorName: String(c.author_name),
+        body: String(c.body),
+        isInternal: Boolean(c.is_internal),
+        createdAt: String(c.created_at),
+      }));
+
+    return {
+      id: String(t.id),
+      ticketNumber: String(t.ticket_number),
+      title: String(t.title),
+      description: String(t.description),
+      category: t.category as TicketCategory,
+      priority: t.priority as TicketPriority,
+      status: t.status as TicketStatus,
+      requesterUserId: String(t.requester_user_id),
+      requesterName: String(t.requester_name),
+      assigneeUserId: t.assignee_user_id ? String(t.assignee_user_id) : null,
+      assigneeName: String(t.assignee_name ?? ''),
+      resolutionNote: String(t.resolution_note ?? ''),
+      createdAt: String(t.created_at),
+      updatedAt: String(t.updated_at),
+      resolvedAt: t.resolved_at ? String(t.resolved_at) : null,
+      comments,
+    };
+  }
+
+  router.get('/tickets', requireAuth, requirePerm('tickets:read'), (req: AuthedRequest, res) => {
+    const canManage = hasPermission(req.user!.role, 'tickets:manage');
+    const rows = db
+      .prepare('SELECT id FROM support_tickets ORDER BY updated_at DESC, created_at DESC')
+      .all() as Array<{ id: string }>;
+    const tickets = rows.map((r) => hydrateTicket(r.id, canManage)).filter(Boolean);
+    const assignees = canManage
+      ? (db
+          .prepare("SELECT id, full_name, role FROM users WHERE is_active = 1 AND role IN ('admin', 'gestionnaire') ORDER BY full_name ASC")
+          .all() as Array<{ id: string; full_name: string; role: string }>)
+      : [];
+    res.json({ tickets, assignees });
+  });
+
+  router.post('/tickets', requireAuth, requirePerm('tickets:create'), (req: AuthedRequest, res) => {
+    try {
+      const b = req.body ?? {};
+      const title = String(b.title ?? '').trim();
+      if (!title) {
+        res.status(400).json({ error: 'Le titre du ticket est obligatoire.' });
+        return;
+      }
+      const allowedCategories: TicketCategory[] = ['incident', 'demande', 'acces', 'materiel', 'logiciel', 'autre'];
+      const allowedPriorities: TicketPriority[] = ['basse', 'normale', 'haute', 'critique'];
+      const category: TicketCategory = allowedCategories.includes(b.category) ? b.category : 'incident';
+      const priority: TicketPriority = allowedPriorities.includes(b.priority) ? b.priority : 'normale';
+
+      const id = newId('tck');
+      const now = new Date().toISOString();
+      let ticketNumber = '';
+      withTransaction(db, () => {
+        ticketNumber = allocateTicketNumber();
+        db.prepare(
+          `INSERT INTO support_tickets (
+            id, ticket_number, title, description, category, priority, status,
+            requester_user_id, requester_name, assignee_user_id, assignee_name,
+            resolution_note, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'ouvert', ?, ?, NULL, '', '', ?, ?)`,
+        ).run(
+          id,
+          ticketNumber,
+          title,
+          String(b.description ?? '').trim(),
+          category,
+          priority,
+          req.user!.id,
+          req.user!.fullName,
+          now,
+          now,
+        );
+      });
+      logAudit(req.user, 'TICKET_CREATE', 'support_ticket', id, `${ticketNumber} · ${title}`);
+      res.status(201).json(hydrateTicket(id, hasPermission(req.user!.role, 'tickets:manage')));
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  router.patch('/tickets/:id', requireAuth, requirePerm('tickets:read'), (req: AuthedRequest, res) => {
+    const existing = db
+      .prepare('SELECT * FROM support_tickets WHERE id = ?')
+      .get(req.params.id) as Record<string, unknown> | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Ticket introuvable.' });
+      return;
+    }
+    const canManage = hasPermission(req.user!.role, 'tickets:manage');
+    const isRequester = String(existing.requester_user_id) === req.user!.id;
+    if (!canManage && !isRequester) {
+      res.status(403).json({ error: 'Seul le support IT ou le demandeur peut modifier ce ticket.' });
+      return;
+    }
+
+    const b = req.body ?? {};
+    const now = new Date().toISOString();
+    const allowedStatuses: TicketStatus[] = ['ouvert', 'en_cours', 'en_attente', 'resolu', 'ferme'];
+
+    if (!canManage) {
+      const nextStatus = b.status ? String(b.status) : String(existing.status);
+      if (nextStatus !== String(existing.status) && nextStatus !== 'ferme' && nextStatus !== 'ouvert') {
+        res.status(403).json({ error: 'Transition de statut réservée aux gestionnaires IT.' });
+        return;
+      }
+      db.prepare('UPDATE support_tickets SET status = ?, updated_at = ? WHERE id = ?').run(nextStatus, now, req.params.id);
+      logAudit(req.user, 'TICKET_UPDATE', 'support_ticket', req.params.id, `Statut: ${nextStatus}`);
+      res.json(hydrateTicket(req.params.id, false));
+      return;
+    }
+
+    const nextStatus = b.status && allowedStatuses.includes(b.status) ? String(b.status) : String(existing.status);
+    let assigneeUserId = existing.assignee_user_id ? String(existing.assignee_user_id) : null;
+    let assigneeName = String(existing.assignee_name ?? '');
+    if (b.assigneeUserId !== undefined) {
+      if (!b.assigneeUserId) {
+        assigneeUserId = null;
+        assigneeName = '';
+      } else {
+        const assignee = db
+          .prepare('SELECT id, full_name FROM users WHERE id = ? AND is_active = 1')
+          .get(String(b.assigneeUserId)) as { id: string; full_name: string } | undefined;
+        if (assignee) {
+          assigneeUserId = assignee.id;
+          assigneeName = assignee.full_name;
+        }
+      }
+    }
+    const resolvedAt =
+      nextStatus === 'resolu' || nextStatus === 'ferme'
+        ? String(existing.resolved_at || now)
+        : null;
+
+    db.prepare(
+      `UPDATE support_tickets SET
+        status = ?,
+        priority = COALESCE(?, priority),
+        category = COALESCE(?, category),
+        assignee_user_id = ?,
+        assignee_name = ?,
+        resolution_note = COALESCE(?, resolution_note),
+        resolved_at = ?,
+        updated_at = ?
+       WHERE id = ?`,
+    ).run(
+      nextStatus,
+      b.priority ?? null,
+      b.category ?? null,
+      assigneeUserId,
+      assigneeName,
+      b.resolutionNote ?? null,
+      resolvedAt,
+      now,
+      req.params.id,
+    );
+    logAudit(req.user, 'TICKET_UPDATE', 'support_ticket', req.params.id, `Statut: ${nextStatus}`);
+    res.json(hydrateTicket(req.params.id, true));
+  });
+
+  router.post('/tickets/:id/comments', requireAuth, requirePerm('tickets:create'), (req: AuthedRequest, res) => {
+    const ticket = db.prepare('SELECT id FROM support_tickets WHERE id = ?').get(req.params.id);
+    if (!ticket) {
+      res.status(404).json({ error: 'Ticket introuvable.' });
+      return;
+    }
+    const body = String(req.body?.body ?? '').trim();
+    if (!body) {
+      res.status(400).json({ error: 'Le message ne peut pas être vide.' });
+      return;
+    }
+    const canManage = hasPermission(req.user!.role, 'tickets:manage');
+    const isInternal = canManage && Boolean(req.body?.isInternal);
+    const now = new Date().toISOString();
+    withTransaction(db, () => {
+      db.prepare(
+        `INSERT INTO support_ticket_comments (id, ticket_id, author_user_id, author_name, body, is_internal, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(newId('tcm'), req.params.id, req.user!.id, req.user!.fullName, body, isInternal ? 1 : 0, now);
+      db.prepare('UPDATE support_tickets SET updated_at = ? WHERE id = ?').run(now, req.params.id);
+    });
+    logAudit(req.user, 'TICKET_COMMENT', 'support_ticket', req.params.id, isInternal ? 'Note interne' : 'Commentaire');
+    res.status(201).json(hydrateTicket(req.params.id, canManage));
+  });
+
+  // --- CONFORMITÉ RGPD (ARTICLES 15, 17, 20, 30) ---
+
+  router.get('/rgpd/registry', requireAuth, (_req, res) => {
+    const company = getCompanyRow();
+    const counts = {
+      users: (db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number }).c,
+      contacts: (db.prepare('SELECT COUNT(*) AS c FROM contacts WHERE deleted_at IS NULL').get() as { c: number }).c,
+      documents: (db.prepare('SELECT COUNT(*) AS c FROM documents WHERE deleted_at IS NULL').get() as { c: number }).c,
+      tickets: (db.prepare('SELECT COUNT(*) AS c FROM support_tickets').get() as { c: number }).c,
+      activeSessions: (db.prepare('SELECT COUNT(*) AS c FROM sessions').get() as { c: number }).c,
+    };
+    const retentionYears = Math.max(1, Math.round((company?.rgpdRetentionDays ?? 3650) / 365));
+    res.json({
+      controller: {
+        name: company?.name ?? '',
+        siret: company?.siret ?? '',
+        address: [company?.address, company?.postalCode, company?.city].filter(Boolean).join(', '),
+        dpoName: company?.rgpdDpoName || 'Direction / Administrateur Factorealm',
+        dpoEmail: company?.rgpdDpoEmail || company?.email || '',
+      },
+      retentionDays: company?.rgpdRetentionDays ?? 3650,
+      processingActivities: [
+        {
+          id: 'reg_billing',
+          title: 'Gestion commerciale, devis, facturation et encaissements',
+          purpose: 'Émission de devis/factures, suivi des règlements et obligations comptables légales.',
+          legalBasis: 'Exécution contractuelle & obligation légale (Art. L123-22 Code de commerce)',
+          dataCategories: 'Raison sociale, nom du contact, adresse postale, courriel, SIRET, règlements.',
+          retention: `10 ans à compter de la clôture de l'exercice (${retentionYears} ans configurés).`,
+        },
+        {
+          id: 'reg_auth',
+          title: 'Authentification, contrôle d\'accès RBAC et journal d\'audit',
+          purpose: 'Sécurisation de l\'accès applicatif, prévention de la fraude et traçabilité.',
+          legalBasis: 'Intérêt légitime de sécurité du système d\'information (Art. 32 RGPD)',
+          dataCategories: 'Nom complet, courriel professionnel, empreinte scrypt, secret TOTP, agent utilisateur, journaux d\'audit.',
+          retention: 'Durée du contrat utilisateur + 1 an pour les journaux techniques.',
+        },
+        {
+          id: 'reg_tickets',
+          title: 'Support informatique interne (Tickets IT)',
+          purpose: 'Traitement et résolution des incidents, demandes d\'accès et maintenance matérielle.',
+          legalBasis: 'Intérêt légitime (exploitation interne et continuité de service)',
+          dataCategories: 'Demandeur, technicien assigné, description et historique des échanges.',
+          retention: '3 ans après clôture du ticket.',
+        },
+        {
+          id: 'reg_expenses',
+          title: 'Notes de frais et justificatifs collaborateurs',
+          purpose: 'Remboursement des frais professionnels et comptabilisation de la TVA déductible.',
+          legalBasis: 'Obligation légale comptable et sociale',
+          dataCategories: 'Nom du salarié, libellés de dépense, montants, pièces justificatives PDF/image.',
+          retention: '10 ans (conservation des pièces comptables).',
+        },
+      ],
+      counts,
+    });
+  });
+
+  router.get('/rgpd/export/me', requireAuth, (req: AuthedRequest, res) => {
+    const userRow = db
+      .prepare('SELECT id, email, full_name, role, totp_enabled, is_active, accounting_scope_note, created_at FROM users WHERE id = ?')
+      .get(req.user!.id);
+    const expenses = db.prepare('SELECT * FROM expense_reports WHERE user_id = ?').all(req.user!.id);
+    const timeEntries = db.prepare('SELECT * FROM time_entries WHERE user_id = ?').all(req.user!.id);
+    const tickets = db.prepare('SELECT * FROM support_tickets WHERE requester_user_id = ?').all(req.user!.id);
+    const auditLogs = db.prepare('SELECT action, entity_type, entity_id, detail, created_at FROM audit_logs WHERE actor_user_id = ? ORDER BY created_at DESC LIMIT 200').all(req.user!.id);
+    logAudit(req.user, 'RGPD_EXPORT_SELF', 'user', req.user!.id, 'Export portabilité Art. 15/20');
+    res.json({
+      exportedAt: new Date().toISOString(),
+      legalReference: 'RGPD Articles 15 et 20 — Droit d\'accès et portabilité',
+      user: userRow,
+      expenses,
+      timeEntries,
+      tickets,
+      recentAuditActions: auditLogs,
+    });
+  });
+
+  router.get('/rgpd/export/contact/:id', requireAuth, requirePerm('rgpd:manage'), (req: AuthedRequest, res) => {
+    const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(req.params.id);
+    if (!contact) {
+      res.status(404).json({ error: 'Contact introuvable.' });
+      return;
+    }
+    const documents = db
+      .prepare('SELECT id, kind, status, number, title, issue_date, total_ht_cents, total_ttc_cents FROM documents WHERE contact_id = ?')
+      .all(req.params.id);
+    const projects = db.prepare('SELECT id, code, name, status FROM projects WHERE client_id = ?').all(req.params.id);
+    logAudit(req.user, 'RGPD_EXPORT_CONTACT', 'contact', req.params.id);
+    res.json({
+      exportedAt: new Date().toISOString(),
+      legalReference: 'RGPD Articles 15 et 20 — Portabilité tiers',
+      contact,
+      documents,
+      projects,
+    });
+  });
+
+  router.post('/rgpd/anonymize-contact/:id', requireAuth, requirePerm('rgpd:manage'), (req: AuthedRequest, res) => {
+    const contact = db.prepare('SELECT id, company_name FROM contacts WHERE id = ?').get(req.params.id) as
+      | { id: string; company_name: string }
+      | undefined;
+    if (!contact) {
+      res.status(404).json({ error: 'Contact introuvable.' });
+      return;
+    }
+    const now = new Date().toISOString();
+    withTransaction(db, () => {
+      db.prepare(
+        `UPDATE contacts SET
+          company_name = 'Tiers anonymisé (RGPD)',
+          contact_name = 'Anonymisé',
+          email = '',
+          phone = '',
+          siret = '',
+          vat_number = '',
+          address = '',
+          postal_code = '',
+          city = '',
+          notes = 'Données personnelles anonymisées (Art. 17 RGPD). Pièces comptables finalisées conservées (Art. L123-22).',
+          deleted_at = ?,
+          updated_at = ?
+         WHERE id = ?`,
+      ).run(now, now, req.params.id);
+    });
+    logAudit(req.user, 'RGPD_ANONYMIZE_CONTACT', 'contact', req.params.id, `Anonymisation Art. 17 (${contact.company_name})`);
+    res.json({ ok: true });
+  });
+
   // --- SAUVEGARDES CHIFFRÉES, AUDIT, RECHERCHE GLOBALE, DOCS API ---
 
   router.post('/backups/export', requireAuth, requirePerm('backups:manage'), (req: AuthedRequest, res) => {
@@ -2744,7 +3261,7 @@ export function createApiRouter(ctx: DbContext): express.Router {
   router.get('/search', requireAuth, (req: AuthedRequest, res) => {
     const q = `%${String(req.query.q ?? '').trim()}%`;
     if (q === '%%') {
-      res.json({ contacts: [], documents: [], bills: [], projects: [] });
+      res.json({ contacts: [], documents: [], bills: [], projects: [], tickets: [] });
       return;
     }
     const contacts = hasPermission(req.user!.role, 'contacts:read')
@@ -2767,17 +3284,26 @@ export function createApiRouter(ctx: DbContext): express.Router {
           .prepare('SELECT id, code, name, client_name FROM projects WHERE code LIKE ? OR name LIKE ? LIMIT 10')
           .all(q, q)
       : [];
-    res.json({ contacts, documents, bills, projects });
+    const tickets = hasPermission(req.user!.role, 'tickets:read')
+      ? db
+          .prepare('SELECT id, ticket_number, title, priority, status FROM support_tickets WHERE ticket_number LIKE ? OR title LIKE ? LIMIT 10')
+          .all(q, q)
+      : [];
+    res.json({ contacts, documents, bills, projects, tickets });
   });
 
   router.get('/docs', requireAuth, (_req, res) => {
     res.json({
       service: 'Factorealm API v1',
-      auth: 'Cookie HttpOnly fr_session + RBAC par rôle',
+      auth: 'Cookie HttpOnly fr_session (session navigateur + expiration inactivité) + RBAC par rôle',
       endpoints: [
         'GET /api/v1/status',
         'POST /api/v1/setup/init',
         'POST /api/v1/auth/login',
+        'POST /api/v1/auth/logout',
+        'POST /api/v1/auth/logout-all',
+        'POST /api/v1/auth/change-password',
+        'GET/DELETE /api/v1/security/sessions',
         'GET/PUT /api/v1/company',
         'POST /api/v1/company/reset',
         'GET/POST/PUT/DELETE /api/v1/contacts',
@@ -2798,6 +3324,13 @@ export function createApiRouter(ctx: DbContext): express.Router {
         'GET /api/v1/accounting/vat-summary',
         'GET/POST /api/v1/accounting/entries',
         'GET /api/v1/accounting/fec',
+        'GET/POST /api/v1/tickets',
+        'PATCH /api/v1/tickets/:id',
+        'POST /api/v1/tickets/:id/comments',
+        'GET /api/v1/rgpd/registry',
+        'GET /api/v1/rgpd/export/me',
+        'GET /api/v1/rgpd/export/contact/:id',
+        'POST /api/v1/rgpd/anonymize-contact/:id',
         'POST /api/v1/backups/export',
         'POST /api/v1/backups/restore',
       ],

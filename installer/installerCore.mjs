@@ -41,6 +41,9 @@ export function parseInstallerArgs(argv) {
     skipInstall: false,
     skipBuild: false,
     skipShortcuts: false,
+    skipPath: false,
+    omitDev: false,
+    runtimeOnly: false,
     installService: false,
   };
 
@@ -54,6 +57,9 @@ export function parseInstallerArgs(argv) {
     else if (arg === '--skip-install') opts.skipInstall = true;
     else if (arg === '--skip-build') opts.skipBuild = true;
     else if (arg === '--skip-shortcuts') opts.skipShortcuts = true;
+    else if (arg === '--skip-path') opts.skipPath = true;
+    else if (arg === '--omit-dev') opts.omitDev = true;
+    else if (arg === '--runtime-only') opts.runtimeOnly = true;
     else if (arg === '--install-service') opts.installService = true;
     else if (arg.startsWith('--install-dir=')) opts.installDir = arg.slice('--install-dir='.length);
     else if (arg === '--install-dir' && argv[i + 1]) opts.installDir = argv[++i];
@@ -255,31 +261,168 @@ export function buildWindowsRemoveStartMenuShortcutPs1() {
   ].join('\r\n');
 }
 
-const EXCLUDED_COPY_ENTRIES = new Set([
+export function buildLinuxCliWrapper({ installDir }) {
+  return [
+    '#!/usr/bin/env bash',
+    `exec node "${installDir}/bin/factorealm.mjs" "$@"`,
+    '',
+  ].join('\n');
+}
+
+export function buildWindowsAddToPathPs1({ binDir }) {
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `$BinDir = "${binDir}".TrimEnd('\\')`,
+    '$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+    '$Scope = if ($IsAdmin) { "Machine" } else { "User" }',
+    '$Current = [Environment]::GetEnvironmentVariable("Path", $Scope)',
+    '$Entries = @()',
+    'if ($Current) { $Entries = $Current -split ";" | Where-Object { $_ -and $_.Trim() -ne "" } }',
+    '$Exists = $false',
+    'foreach ($Entry in $Entries) {',
+    '  if ($Entry.Trim().TrimEnd("\\").ToLowerInvariant() -eq $BinDir.ToLowerInvariant()) { $Exists = $true; break }',
+    '}',
+    'if (-not $Exists) {',
+    '  $Updated = ($Entries + $BinDir) -join ";"',
+    '  [Environment]::SetEnvironmentVariable("Path", $Updated, $Scope)',
+    '  Write-Host "PATH ($Scope) mis a jour : $BinDir"',
+    '} else {',
+    '  Write-Host "Deja present dans le PATH ($Scope) : $BinDir"',
+    '}',
+    'if ($env:Path -notlike "*$BinDir*") { $env:Path = "$env:Path;$BinDir" }',
+    '',
+  ].join('\r\n');
+}
+
+export function buildWindowsRemoveFromPathPs1({ binDir }) {
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `$BinDir = "${binDir}".TrimEnd('\\').ToLowerInvariant()`,
+    'foreach ($Scope in @("Machine", "User")) {',
+    '  try {',
+    '    $Current = [Environment]::GetEnvironmentVariable("Path", $Scope)',
+    '    if ($Current) {',
+    '      $Filtered = $Current -split ";" | Where-Object { $_ -and $_.Trim().TrimEnd("\\").ToLowerInvariant() -ne $BinDir }',
+    '      [Environment]::SetEnvironmentVariable("Path", ($Filtered -join ";"), $Scope)',
+    '    }',
+    '  } catch {}',
+    '}',
+    'Write-Host "Entree PATH Factorealm retiree."',
+    '',
+  ].join('\r\n');
+}
+
+const ALWAYS_EXCLUDED_NAMES = new Set([
   'node_modules',
   'data',
-  'dist',
+  'dist-packages',
+  'coverage',
   '.git',
+  '.aistudio',
   '.playwright-cli',
+  '.vscode',
+  '.idea',
   '.env',
   '.env.local',
+  '.env.example',
+  '.gitignore',
+  'bun.lock',
+  'docs',
+  'README.md',
+  'release.md',
+  'metadata.json',
+  'install.sh',
+  'install.ps1',
 ]);
 
-export function copyProjectFiles(sourceDir, targetDir) {
+const ALWAYS_EXCLUDED_REL_PATHS = new Set([
+  'installer/build-deb.sh',
+  'installer/windows/factorealm.iss',
+  'installer/windows/build-inno.ps1',
+]);
+
+const RUNTIME_ONLY_EXCLUDED_REL_PATHS = new Set([
+  'tsconfig.json',
+  'vite.config.ts',
+  'index.html',
+  'public',
+  'src/components',
+  'src/lib',
+  'src/App.tsx',
+  'src/main.tsx',
+  'src/index.css',
+]);
+
+function isTestFileName(name) {
+  return /\.(test|spec)\.(ts|tsx|mjs|js)$/i.test(name);
+}
+
+export function copyProjectFiles(sourceDir, targetDir, options = {}, currentRel = '') {
+  const { includeTests = false, runtimeOnly = false } = options;
   const srcAbs = path.resolve(sourceDir);
   const dstAbs = path.resolve(targetDir);
-  if (srcAbs === dstAbs) return;
+  if (srcAbs === dstAbs && currentRel === '') return;
 
   fs.mkdirSync(dstAbs, { recursive: true });
   const entries = fs.readdirSync(srcAbs, { withFileTypes: true });
   for (const entry of entries) {
-    if (EXCLUDED_COPY_ENTRIES.has(entry.name)) continue;
+    if (ALWAYS_EXCLUDED_NAMES.has(entry.name)) continue;
+    if (entry.name === 'dist' && !runtimeOnly) continue;
+
+    const relPath = currentRel ? `${currentRel}/${entry.name}` : entry.name;
+    if (ALWAYS_EXCLUDED_REL_PATHS.has(relPath)) continue;
+    if (runtimeOnly && RUNTIME_ONLY_EXCLUDED_REL_PATHS.has(relPath)) continue;
+    if (!includeTests && entry.isFile() && isTestFileName(entry.name)) continue;
+
     const srcPath = path.join(srcAbs, entry.name);
     const dstPath = path.join(dstAbs, entry.name);
     if (entry.isDirectory()) {
-      copyProjectFiles(srcPath, dstPath);
+      copyProjectFiles(srcPath, dstPath, options, relPath);
     } else if (entry.isFile()) {
       fs.copyFileSync(srcPath, dstPath);
     }
+  }
+}
+
+export function pruneUnnecessaryInstalledFiles(targetDir, { removeFrontendSources = false } = {}) {
+  const absTarget = path.resolve(targetDir);
+
+  function walkAndDeleteTests(dir) {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === 'data' || entry.name === 'dist') continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkAndDeleteTests(fullPath);
+      } else if (entry.isFile() && isTestFileName(entry.name)) {
+        fs.rmSync(fullPath, { force: true });
+      }
+    }
+  }
+
+  walkAndDeleteTests(absTarget);
+
+  if (removeFrontendSources) {
+    for (const rel of RUNTIME_ONLY_EXCLUDED_REL_PATHS) {
+      fs.rmSync(path.join(absTarget, rel), { recursive: true, force: true });
+    }
+  }
+}
+
+export function lockfileNeedsPlatformReset(
+  lockfilePath,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  if (!fs.existsSync(lockfilePath)) return false;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockfilePath, 'utf8'));
+    const pkgKeys = Object.keys(parsed?.packages ?? {});
+    const esbuildPlatformKeys = pkgKeys.filter((k) => k.includes('node_modules/@esbuild/'));
+    if (esbuildPlatformKeys.length === 0) return false;
+    const expectedSuffix = `node_modules/@esbuild/${platform}-${arch}`;
+    return !esbuildPlatformKeys.some((k) => k.endsWith(expectedSuffix));
+  } catch {
+    return false;
   }
 }

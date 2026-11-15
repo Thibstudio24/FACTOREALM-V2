@@ -7,6 +7,11 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
 Write-Host "[1/3] Installation des dépendances et compilation du frontend..."
+if ((Test-Path "package-lock.json") -and -not (Select-String -Path "package-lock.json" -Pattern '"node_modules/@esbuild/win32-x64"' -SimpleMatch -Quiet)) {
+  Write-Host "      Réinitialisation du lockfile multi-OS pour Windows x64..."
+  Remove-Item -Force "package-lock.json" -ErrorAction SilentlyContinue
+  Remove-Item -Recurse -Force "node_modules" -ErrorAction SilentlyContinue
+}
 & npm.cmd install
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

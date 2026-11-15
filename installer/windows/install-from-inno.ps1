@@ -33,8 +33,14 @@ $ArgsList = @(
   "--port=$Port",
   "--host=$ListenHost",
   "--skip-tests",
-  "--skip-shortcuts"
+  "--skip-shortcuts",
+  "--skip-path"
 )
+
+if (Test-Path (Join-Path $InstallDir "dist\index.html")) {
+  $ArgsList += "--skip-build"
+  $ArgsList += "--omit-dev"
+}
 
 if ($InitCompany -eq "1") {
   $ArgsList += "--init-company"

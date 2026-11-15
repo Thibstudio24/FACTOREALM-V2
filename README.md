@@ -14,9 +14,10 @@ Cette reconstruction a été réalisée dans les limites réelles de l'environne
 
 ## Installateur serveur (Linux & Windows)
 
-- **Linux (`bash`) :** `bash install.sh` (configure dossier, port, `.env`, entreprise, build, tests et génère `factorealm.service` / `install-systemd.sh`)
-- **Windows (`PowerShell`) :** `powershell -ExecutionPolicy Bypass -File .\install.ps1` (configure dossier, port, `.env`, entreprise, build, tests et génère `register-windows-task.ps1`)
+- **Linux (`bash`) :** `bash install.sh` (configure dossier, port, `.env`, entreprise, build, ajoute `factorealm` au `PATH` et génère `factorealm.service` / `install-systemd.sh`)
+- **Windows (`PowerShell`) :** `powershell -ExecutionPolicy Bypass -File .\install.ps1` (configure dossier, port, `.env`, entreprise, ajoute `factorealm` au `PATH`, crée les raccourcis et génère `register-windows-task.ps1`)
 - **Paquet Debian/Ubuntu (`.deb`) :** `bash installer/build-deb.sh`
+- **Commandes CLI (`PATH`) :** `factorealm start` · `factorealm stop` · `factorealm restart` · `factorealm status`
 
 ## Démarrage rapide manuel (bash)
 
