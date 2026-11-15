@@ -21,11 +21,14 @@ sudo bash install.sh
 bash installer/build-deb.sh
 ```
 
-### Windows 11 / Windows Server (`PowerShell`)
+### Windows 11 / Windows Server (`PowerShell` & Inno Setup)
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 # Puis pour enregistrer le démarrage automatique (PowerShell Administrateur) :
 .\register-windows-task.ps1
+
+# Ou pour compiler un installeur graphique Windows (.exe) avec Inno Setup 6 :
+powershell -ExecutionPolicy Bypass -File .\installer\windows\build-inno.ps1
 ```
 
 ### Mode non interactif (exemple)

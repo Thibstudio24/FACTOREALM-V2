@@ -414,7 +414,7 @@ async function main() {
     fs.writeFileSync(path.join(installDir, 'factorealm-start.ps1'), buildWindowsStartPs1({ installDir }));
     fs.writeFileSync(
       path.join(installDir, 'register-windows-task.ps1'),
-      buildWindowsRegisterTaskPs1({ installDir }),
+      buildWindowsRegisterTaskPs1({ installDir, dataDir }),
     );
     fs.writeFileSync(
       path.join(installDir, 'unregister-windows-task.ps1'),

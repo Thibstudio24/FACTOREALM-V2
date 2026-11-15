@@ -67,8 +67,12 @@ test('Validation port/hôte, parsing arguments et génération scripts Windows/L
   const winCmd = buildWindowsStartCmd({ installDir: 'C:\\Factorealm' });
   assert.match(winCmd, /npm\.cmd run start/);
 
-  const winTask = buildWindowsRegisterTaskPs1({ installDir: 'C:\\Factorealm' });
+  const winTask = buildWindowsRegisterTaskPs1({
+    installDir: 'C:\\Factorealm',
+    dataDir: 'C:\\ProgramData\\Factorealm\\data',
+  });
   assert.match(winTask, /Register-ScheduledTask/);
+  assert.match(winTask, /icacls\.exe/);
 });
 
 test('Installateur bout-en-bout : copie propre, .env, scripts OS et initialisation entreprise SQLite', () => {

@@ -173,12 +173,18 @@ export function buildWindowsStartPs1({ installDir }) {
   ].join('\r\n');
 }
 
-export function buildWindowsRegisterTaskPs1({ installDir, taskName = 'FactorealmServer' }) {
+export function buildWindowsRegisterTaskPs1({ installDir, dataDir, taskName = 'FactorealmServer' }) {
+  const effectiveDataDir = dataDir || `${installDir}\\data`;
   return [
     '# Exécuter dans PowerShell en tant qu\'Administrateur',
     '$ErrorActionPreference = "Stop"',
     `$TaskName = "${taskName}"`,
-    `$ScriptPath = "${installDir}\\factorealm-start.ps1"`,
+    `$InstallDir = "${installDir}"`,
+    `$DataDir = "${effectiveDataDir}"`,
+    `$ScriptPath = "$InstallDir\\factorealm-start.ps1"`,
+    'New-Item -ItemType Directory -Force -Path $DataDir | Out-Null',
+    '& icacls.exe $InstallDir /grant "NT AUTHORITY\\NETWORK SERVICE:(OI)(CI)RX" /T /C | Out-Null',
+    '& icacls.exe $DataDir /grant "NT AUTHORITY\\NETWORK SERVICE:(OI)(CI)M" /T /C | Out-Null',
     '$Action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`""',
     '$Trigger = New-ScheduledTaskTrigger -AtStartup',
     '$Principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\\NETWORK SERVICE" -LogonType ServiceAccount -RunLevel Highest',
