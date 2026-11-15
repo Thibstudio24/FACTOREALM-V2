@@ -40,6 +40,7 @@ export function parseInstallerArgs(argv) {
     skipTests: false,
     skipInstall: false,
     skipBuild: false,
+    skipShortcuts: false,
     installService: false,
   };
 
@@ -52,6 +53,7 @@ export function parseInstallerArgs(argv) {
     else if (arg === '--skip-tests') opts.skipTests = true;
     else if (arg === '--skip-install') opts.skipInstall = true;
     else if (arg === '--skip-build') opts.skipBuild = true;
+    else if (arg === '--skip-shortcuts') opts.skipShortcuts = true;
     else if (arg === '--install-service') opts.installService = true;
     else if (arg.startsWith('--install-dir=')) opts.installDir = arg.slice('--install-dir='.length);
     else if (arg === '--install-dir' && argv[i + 1]) opts.installDir = argv[++i];
@@ -158,8 +160,14 @@ export function buildWindowsStartCmd({ installDir }) {
   return [
     '@echo off',
     'setlocal',
+    'title Factorealm Serveur',
     `cd /d "${installDir}"`,
     'call npm.cmd run start',
+    'if errorlevel 1 (',
+    '  echo.',
+    '  echo [Factorealm] Le serveur s est arrete avec une erreur.',
+    '  pause',
+    ')',
     '',
   ].join('\r\n');
 }
@@ -207,6 +215,42 @@ export function buildWindowsUnregisterTaskPs1({ taskName = 'FactorealmServer' })
     '} else {',
     '  Write-Host "Aucune tâche $TaskName trouvée."',
     '}',
+    '',
+  ].join('\r\n');
+}
+
+export function buildWindowsStartMenuShortcutPs1({ installDir, port }) {
+  const cleanPort = validatePort(port);
+  return [
+    '$ErrorActionPreference = "Stop"',
+    `$InstallDir = "${installDir}"`,
+    `$Port = "${cleanPort}"`,
+    '$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+    '$ProgramsRoot = if ($IsAdmin) { [Environment]::GetFolderPath("CommonPrograms") } else { [Environment]::GetFolderPath("Programs") }',
+    '$MenuDir = Join-Path $ProgramsRoot "Factorealm"',
+    'New-Item -ItemType Directory -Force -Path $MenuDir | Out-Null',
+    '$Shell = New-Object -ComObject WScript.Shell',
+    '$LaunchShortcut = $Shell.CreateShortcut((Join-Path $MenuDir "Lancer le serveur Factorealm.lnk"))',
+    '$LaunchShortcut.TargetPath = Join-Path $InstallDir "factorealm-start.cmd"',
+    '$LaunchShortcut.WorkingDirectory = $InstallDir',
+    '$LaunchShortcut.Description = "Demarrer le serveur Factorealm (port $Port)"',
+    '$LaunchShortcut.Save()',
+    '$UrlFile = Join-Path $MenuDir "Ouvrir Factorealm (navigateur).url"',
+    'Set-Content -Path $UrlFile -Value "[InternetShortcut]`r`nURL=http://127.0.0.1:$Port`r`n" -Encoding ASCII',
+    'Write-Host "Raccourcis du menu Demarrer crees dans : $MenuDir"',
+    '',
+  ].join('\r\n');
+}
+
+export function buildWindowsRemoveStartMenuShortcutPs1() {
+  return [
+    'foreach ($Root in @([Environment]::GetFolderPath("CommonPrograms"), [Environment]::GetFolderPath("Programs"))) {',
+    '  if ($Root) {',
+    '    $MenuDir = Join-Path $Root "Factorealm"',
+    '    if (Test-Path $MenuDir) { Remove-Item -Recurse -Force $MenuDir }',
+    '  }',
+    '}',
+    'Write-Host "Raccourcis Factorealm supprimes du menu Demarrer."',
     '',
   ].join('\r\n');
 }

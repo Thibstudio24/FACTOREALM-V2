@@ -11,7 +11,9 @@ import {
   buildLinuxSystemdInstallScript,
   buildLinuxSystemdUnit,
   buildWindowsRegisterTaskPs1,
+  buildWindowsRemoveStartMenuShortcutPs1,
   buildWindowsStartCmd,
+  buildWindowsStartMenuShortcutPs1,
   buildWindowsStartPs1,
   buildWindowsUnregisterTaskPs1,
   copyProjectFiles,
@@ -53,6 +55,7 @@ Options principales :
   --skip-tests                 Ne pas exécuter la suite npm test pendant l'installation
   --skip-install               Ne pas exécuter npm install
   --skip-build                 Ne pas exécuter npm run build
+  --skip-shortcuts             Ne pas créer le raccourci dans le menu Démarrer Windows
   --install-service            Installer et activer le service systemd (Linux root uniquement)
   --help, -h                   Afficher cette aide
 `);
@@ -420,6 +423,27 @@ async function main() {
       path.join(installDir, 'unregister-windows-task.ps1'),
       buildWindowsUnregisterTaskPs1({}),
     );
+    const createShortcutPath = path.join(installDir, 'create-start-menu-shortcut.ps1');
+    fs.writeFileSync(
+      createShortcutPath,
+      buildWindowsStartMenuShortcutPs1({ installDir, port }),
+    );
+    fs.writeFileSync(
+      path.join(installDir, 'remove-start-menu-shortcut.ps1'),
+      buildWindowsRemoveStartMenuShortcutPs1(),
+    );
+
+    if (isWin && !opts.skipShortcuts) {
+      try {
+        runCmd(
+          'powershell.exe',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', createShortcutPath],
+          installDir,
+        );
+      } catch (shortcutErr) {
+        console.warn(`Avertissement raccourci menu Démarrer : ${(shortcutErr).message}`);
+      }
+    }
 
     if (installService && !isWin) {
       console.log('\nInstallation du service systemd factorealm.service...');

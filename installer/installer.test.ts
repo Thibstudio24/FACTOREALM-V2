@@ -9,7 +9,9 @@ import {
   buildLinuxStartScript,
   buildLinuxSystemdUnit,
   buildWindowsRegisterTaskPs1,
+  buildWindowsRemoveStartMenuShortcutPs1,
   buildWindowsStartCmd,
+  buildWindowsStartMenuShortcutPs1,
   copyProjectFiles,
   parseInstallerArgs,
   validateHost,
@@ -73,6 +75,16 @@ test('Validation port/hôte, parsing arguments et génération scripts Windows/L
   });
   assert.match(winTask, /Register-ScheduledTask/);
   assert.match(winTask, /icacls\.exe/);
+
+  const winShortcut = buildWindowsStartMenuShortcutPs1({
+    installDir: 'C:\\Factorealm',
+    port: 3000,
+  });
+  assert.match(winShortcut, /Lancer le serveur Factorealm\.lnk/);
+  assert.match(winShortcut, /factorealm-start\.cmd/);
+
+  const winRemoveShortcut = buildWindowsRemoveStartMenuShortcutPs1();
+  assert.match(winRemoveShortcut, /CommonPrograms/);
 });
 
 test('Installateur bout-en-bout : copie propre, .env, scripts OS et initialisation entreprise SQLite', () => {
@@ -130,6 +142,8 @@ test('Installateur bout-en-bout : copie propre, .env, scripts OS et initialisati
     assert.equal(fs.existsSync(path.join(targetDir, 'factorealm-start.ps1')), true);
     assert.equal(fs.existsSync(path.join(targetDir, 'register-windows-task.ps1')), true);
     assert.equal(fs.existsSync(path.join(targetDir, 'unregister-windows-task.ps1')), true);
+    assert.equal(fs.existsSync(path.join(targetDir, 'create-start-menu-shortcut.ps1')), true);
+    assert.equal(fs.existsSync(path.join(targetDir, 'remove-start-menu-shortcut.ps1')), true);
 
     // 4. Vérifier que la base SQLite a bien été créée dans dataDir
     assert.equal(fs.existsSync(path.join(dataDir, 'factorealm.sqlite')), true);

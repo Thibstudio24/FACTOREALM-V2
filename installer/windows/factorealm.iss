@@ -36,6 +36,7 @@ Name: "french"; MessagesFile: "compiler:Languages\French.isl"
 
 [Tasks]
 Name: "registerservice"; Description: "Démarrer automatiquement le serveur Factorealm au démarrage de Windows (tâche système)"
+Name: "desktopstart"; Description: "Créer un raccourci pour lancer le serveur sur le Bureau"; Flags: unchecked
 Name: "desktopicon"; Description: "Créer un raccourci d'ouverture dans le navigateur sur le Bureau"; Flags: unchecked
 
 [Dirs]
@@ -62,9 +63,11 @@ Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdi
 Source: "..\..\dist\*"; DestDir: "{app}\dist"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\Ouvrir Factorealm"; Filename: "http://127.0.0.1:{code:GetPort}"; Comment: "Ouvrir l'interface web Factorealm"
-Name: "{group}\Démarrer le serveur manuellement"; Filename: "{app}\factorealm-start.cmd"
-Name: "{autodesktop}\Factorealm"; Filename: "http://127.0.0.1:{code:GetPort}"; Tasks: desktopicon
+Name: "{group}\Lancer le serveur Factorealm"; Filename: "{app}\factorealm-start.cmd"; WorkingDir: "{app}"; Comment: "Démarrer le serveur Factorealm (port {code:GetPort})"
+Name: "{group}\Ouvrir Factorealm (navigateur)"; Filename: "http://127.0.0.1:{code:GetPort}"; Comment: "Ouvrir l'interface web Factorealm"
+Name: "{group}\Désinstaller Factorealm"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\Lancer le serveur Factorealm"; Filename: "{app}\factorealm-start.cmd"; WorkingDir: "{app}"; Tasks: desktopstart
+Name: "{autodesktop}\Ouvrir Factorealm"; Filename: "http://127.0.0.1:{code:GetPort}"; Tasks: desktopicon
 
 [Run]
 ; 1. Installer Node.js 22 LTS silencieusement uniquement s'il vient d'être téléchargé

@@ -32,7 +32,8 @@ $ArgsList = @(
   "--data-dir=$DataDir",
   "--port=$Port",
   "--host=$ListenHost",
-  "--skip-tests"
+  "--skip-tests",
+  "--skip-shortcuts"
 )
 
 if ($InitCompany -eq "1") {
