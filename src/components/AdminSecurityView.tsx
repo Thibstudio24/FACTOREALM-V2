@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Download, KeyRound, Shield, Upload } from 'lucide-react';
+import { AlertTriangle, Download, KeyRound, RotateCcw, Shield, Upload } from 'lucide-react';
 import type { CompanyProfile, RoleCode, UserAccount } from '../core/types';
 import { apiFetch, downloadBlobText } from '../lib/apiClient';
 
 interface AdminSecurityViewProps {
   company: CompanyProfile;
   userRole: RoleCode;
+  userTotpEnabled?: boolean;
   dark: boolean;
   textScale: 'standard' | 'comfort' | 'large';
   highContrast: boolean;
@@ -19,6 +20,7 @@ interface AdminSecurityViewProps {
 export function AdminSecurityView({
   company,
   userRole,
+  userTotpEnabled = false,
   dark,
   textScale,
   highContrast,
@@ -56,6 +58,13 @@ export function AdminSecurityView({
   const [backupPass, setBackupPass] = useState('');
   const [restorePass, setRestorePass] = useState('');
   const [restoreFileText, setRestoreFileText] = useState('');
+
+  // Réinitialisation entreprise (admin uniquement)
+  const [resetPanelOpen, setResetPanelOpen] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState('');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetTotpCode, setResetTotpCode] = useState('');
+  const [resetting, setResetting] = useState(false);
 
   // Import historique factures CSV (Tiime / générique)
   const [histCsv, setHistCsv] = useState(
@@ -278,6 +287,137 @@ export function AdminSecurityView({
               </button>
             </div>
           </div>
+
+          {isAdmin && (
+            <div className="lg:col-span-2 rounded-lg border border-red-200 bg-red-50/60 p-5 space-y-4 dark:border-red-900/60 dark:bg-red-950/20">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h2 className="font-display text-base font-bold text-red-900 dark:text-red-200">
+                      Zone critique — Réinitialiser l'entreprise
+                    </h2>
+                    <p className="mt-1 text-xs text-red-800/90 dark:text-red-300/90 max-w-2xl">
+                      Action réservée aux administrateurs. Supprime définitivement l'entreprise, tous les comptes utilisateurs, tiers, devis, factures, règlements, écritures comptables et justificatifs locaux pour repartir de l'assistant de premier lancement.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSubTab('backups')}
+                    className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-semibold text-red-800 hover:bg-red-50 dark:border-red-800 dark:bg-slate-900 dark:text-red-200"
+                  >
+                    Exporter une sauvegarde .frbak avant
+                  </button>
+                  {!resetPanelOpen && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setError(null);
+                        setResetPanelOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-red-700"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Réinitialiser l'entreprise
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {resetPanelOpen && (
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setError(null);
+                    setResetting(true);
+                    try {
+                      await apiFetch('/company/reset', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                          confirmText: resetConfirmText,
+                          password: resetPassword,
+                          totpCode: userTotpEnabled ? resetTotpCode : undefined,
+                        }),
+                      });
+                      onLoggedOut();
+                    } catch (err) {
+                      setError((err as Error).message);
+                    } finally {
+                      setResetting(false);
+                    }
+                  }}
+                  className="rounded-md border border-red-200 bg-white p-4 space-y-3 dark:border-red-900/70 dark:bg-[#0D1B2E]"
+                >
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <label htmlFor="reset-confirm-text" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Saisissez <span className="font-mono text-red-600 dark:text-red-400">REINITIALISER</span> pour confirmer *
+                      </label>
+                      <input
+                        id="reset-confirm-text"
+                        required
+                        value={resetConfirmText}
+                        onChange={(e) => setResetConfirmText(e.target.value)}
+                        placeholder="REINITIALISER"
+                        className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="reset-admin-password" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Mot de passe administrateur actuel *
+                      </label>
+                      <input
+                        id="reset-admin-password"
+                        type="password"
+                        required
+                        value={resetPassword}
+                        onChange={(e) => setResetPassword(e.target.value)}
+                        className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                      />
+                    </div>
+                    {userTotpEnabled && (
+                      <div>
+                        <label htmlFor="reset-totp-code" className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                          Code 2FA TOTP (6 chiffres) *
+                        </label>
+                        <input
+                          id="reset-totp-code"
+                          required
+                          value={resetTotpCode}
+                          onChange={(e) => setResetTotpCode(e.target.value)}
+                          placeholder="123456"
+                          className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetPanelOpen(false);
+                        setResetConfirmText('');
+                        setResetPassword('');
+                        setResetTotpCode('');
+                      }}
+                      className="rounded-md border border-slate-300 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Annuler
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={resetting}
+                      className="rounded-md bg-red-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                    >
+                      {resetting ? 'Réinitialisation...' : 'Confirmer la réinitialisation définitive'}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          )}
         </div>
       )}
 

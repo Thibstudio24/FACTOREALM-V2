@@ -62,6 +62,7 @@ export default function App() {
     email: string;
     fullName: string;
     role: RoleCode;
+    totpEnabled?: boolean;
   } | null>(null);
   const [company, setCompany] = useState<CompanyProfile | null>(null);
 
@@ -121,7 +122,7 @@ export default function App() {
 
   const loadWorkspaceData = useCallback(async () => {
     const me = await apiFetch<{
-      user: { id: string; email: string; fullName: string; role: RoleCode };
+      user: { id: string; email: string; fullName: string; role: RoleCode; totpEnabled?: boolean };
       company: CompanyProfile;
     }>('/auth/me');
     setUser(me.user);
@@ -192,9 +193,13 @@ export default function App() {
           setAuthed(true);
         } catch {
           setAuthed(false);
+          setCompany(null);
+          setUser(null);
         }
       } else {
         setAuthed(false);
+        setCompany(null);
+        setUser(null);
       }
     } finally {
       setLoading(false);
@@ -445,6 +450,7 @@ export default function App() {
             <AdminSecurityView
               company={company}
               userRole={user.role}
+              userTotpEnabled={Boolean(user.totpEnabled)}
               dark={dark}
               textScale={textScale}
               highContrast={highContrast}
@@ -454,6 +460,9 @@ export default function App() {
               onRefresh={loadWorkspaceData}
               onLoggedOut={() => {
                 setAuthed(false);
+                setCompany(null);
+                setUser(null);
+                setActiveTab('dashboard');
                 void bootstrap();
               }}
             />

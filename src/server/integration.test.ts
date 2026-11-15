@@ -180,3 +180,122 @@ test('Parcours complet API : initialisation sans mot de passe fixe, devis -> fac
     await srv.close();
   }
 });
+
+test('Réinitialisation entreprise réservée aux administrateurs (RBAC, mot de passe, suppression pièces et réinitialisation)', async () => {
+  const srv = await createTestServer();
+
+  try {
+    // 1. Initialisation entreprise + admin
+    const initRes = await fetch(`${srv.baseUrl}/setup/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        companyName: 'Société Initiale SAS',
+        legalForm: 'SAS',
+        adminName: 'Admin Un',
+        adminEmail: 'admin1@init.fr',
+        adminPassword: 'AdminPassword2026!',
+      }),
+    });
+    assert.equal(initRes.status, 201);
+    const adminCookie = (initRes.headers.get('set-cookie') ?? '').split(';')[0];
+
+    // 2. Créer un compte non-admin (gestionnaire) et s'y connecter
+    const createUserRes = await fetch(`${srv.baseUrl}/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        email: 'gest@init.fr',
+        fullName: 'Lucie Gestion',
+        role: 'gestionnaire',
+        password: 'GestPassword2026!',
+      }),
+    });
+    assert.equal(createUserRes.status, 201);
+
+    const loginGestRes = await fetch(`${srv.baseUrl}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'gest@init.fr', password: 'GestPassword2026!' }),
+    });
+    assert.equal(loginGestRes.status, 200);
+    const gestCookie = (loginGestRes.headers.get('set-cookie') ?? '').split(';')[0];
+
+    // 3. Un gestionnaire ne peut PAS réinitialiser l'entreprise (403)
+    const gestResetRes = await fetch(`${srv.baseUrl}/company/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: gestCookie },
+      body: JSON.stringify({
+        confirmText: 'REINITIALISER',
+        password: 'GestPassword2026!',
+      }),
+    });
+    assert.equal(gestResetRes.status, 403);
+
+    // 4. L'admin avec mauvais texte ou mauvais mot de passe échoue (400 / 401)
+    const badTextRes = await fetch(`${srv.baseUrl}/company/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        confirmText: 'NON',
+        password: 'AdminPassword2026!',
+      }),
+    });
+    assert.equal(badTextRes.status, 400);
+
+    const badPassRes = await fetch(`${srv.baseUrl}/company/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        confirmText: 'REINITIALISER',
+        password: 'WrongPassword!',
+      }),
+    });
+    assert.equal(badPassRes.status, 401);
+
+    // 5. Simuler un justificatif déposé sur disque
+    const dummyReceiptPath = path.join(srv.ctx.uploadDir, 'justificatif-test.pdf');
+    fs.writeFileSync(dummyReceiptPath, '%PDF-1.4\n%test');
+    assert.equal(fs.existsSync(dummyReceiptPath), true);
+
+    // 6. Réinitialisation légitime par l'admin
+    const okResetRes = await fetch(`${srv.baseUrl}/company/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+      body: JSON.stringify({
+        confirmText: 'REINITIALISER',
+        password: 'AdminPassword2026!',
+      }),
+    });
+    assert.equal(okResetRes.status, 200);
+    const okBody = await okResetRes.json();
+    assert.equal(okBody.reset, true);
+
+    // 7. Vérifier suppression des fichiers, invalidation des sessions et retour à initialized=false
+    assert.equal(fs.existsSync(dummyReceiptPath), false);
+    const stAfter = await fetch(`${srv.baseUrl}/status`).then((r) => r.json());
+    assert.equal(stAfter.initialized, false);
+    assert.equal(stAfter.authenticated, false);
+
+    const oldSessionCheck = await fetch(`${srv.baseUrl}/auth/me`, {
+      headers: { Cookie: adminCookie },
+    });
+    assert.equal(oldSessionCheck.status, 401);
+
+    // 8. Nouvelle entreprise initialisable immédiatement sans mot de passe fixe
+    const reinitRes = await fetch(`${srv.baseUrl}/setup/init`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        companyName: 'Nouvelle Entreprise SAS',
+        legalForm: 'SAS',
+        adminName: 'Admin Deux',
+        adminEmail: 'admin2@nouvelle.fr',
+        adminPassword: 'NouveauPassword2026!',
+      }),
+    });
+    assert.equal(reinitRes.status, 201);
+  } finally {
+    await srv.close();
+  }
+});

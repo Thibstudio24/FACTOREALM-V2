@@ -644,6 +644,85 @@ export function createApiRouter(ctx: DbContext): express.Router {
     res.json(getCompanyRow());
   });
 
+  router.post('/company/reset', requireAuth, requirePerm('company:write'), (req: AuthedRequest, res) => {
+    const ip = req.ip ?? 'local';
+    if (!checkRateLimit(ip)) {
+      res.status(429).json({ error: 'Trop de tentatives. Réessayez dans une minute.' });
+      return;
+    }
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Seul un compte administrateur peut réinitialiser l\'entreprise.' });
+      return;
+    }
+
+    const { password, confirmText, totpCode } = req.body ?? {};
+    if (String(confirmText ?? '').trim().toUpperCase() !== 'REINITIALISER') {
+      res.status(400).json({ error: 'Veuillez saisir exactement REINITIALISER pour confirmer la réinitialisation.' });
+      return;
+    }
+
+    const adminRow = db
+      .prepare('SELECT id, password_hash, totp_enabled, totp_secret FROM users WHERE id = ? AND is_active = 1')
+      .get(req.user.id) as
+      | { id: string; password_hash: string; totp_enabled: number; totp_secret: string | null }
+      | undefined;
+
+    if (!adminRow || !verifyPassword(String(password ?? ''), adminRow.password_hash)) {
+      res.status(401).json({ error: 'Mot de passe administrateur incorrect.' });
+      return;
+    }
+
+    if (Number(adminRow.totp_enabled) === 1) {
+      if (!totpCode || !adminRow.totp_secret || !verifyTotpCode(adminRow.totp_secret, String(totpCode))) {
+        res.status(401).json({ error: 'Code 2FA TOTP requis ou invalide.' });
+        return;
+      }
+    }
+
+    const tablesToClear = [
+      'audit_logs',
+      'time_entries',
+      'projects',
+      'journal_lines',
+      'journal_entries',
+      'accounting_periods',
+      'forecast_assumptions',
+      'bank_rules',
+      'bank_transactions',
+      'bank_accounts',
+      'expense_reports',
+      'supplier_bills',
+      'receipts',
+      'reminders',
+      'payments',
+      'document_versions',
+      'document_lines',
+      'documents',
+      'sequences',
+      'catalog_items',
+      'contacts',
+      'sessions',
+      'users',
+      'companies',
+    ];
+
+    withTransaction(db, () => {
+      for (const table of tablesToClear) {
+        db.exec(`DELETE FROM ${table};`);
+      }
+    });
+
+    if (fs.existsSync(uploadDir)) {
+      for (const entry of fs.readdirSync(uploadDir)) {
+        const target = safeUploadPath(uploadDir, entry);
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+    }
+
+    res.clearCookie(SESSION_COOKIE, { path: '/' });
+    res.json({ ok: true, reset: true });
+  });
+
   router.get('/users', requireAuth, requirePerm('users:manage'), (_req, res) => {
     const rows = db
       .prepare('SELECT id, email, full_name, role, totp_enabled, is_active, accounting_scope_note, created_at FROM users ORDER BY created_at ASC')
@@ -2762,6 +2841,7 @@ export function createApiRouter(ctx: DbContext): express.Router {
         'POST /api/v1/setup/init',
         'POST /api/v1/auth/login',
         'GET/PUT /api/v1/company',
+        'POST /api/v1/company/reset',
         'GET/POST/PUT/DELETE /api/v1/contacts',
         'GET/POST/DELETE /api/v1/catalog',
         'GET/POST/PUT /api/v1/documents',
