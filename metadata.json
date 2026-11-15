@@ -1,0 +1,6 @@
+{
+  "name": "Factorealm",
+  "description": "Logiciel de gestion commerciale, facturation et comptabilité pour les entreprises françaises.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
