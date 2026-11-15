@@ -54,7 +54,7 @@ npm.cmd run build
 npm.cmd run dev
 
 # Ou démarrer en production après build (PowerShell)
-$env:NODE_ENV="production"; npm.cmd exec tsx server.ts
+npm.cmd run start
 ```
 
 - **Arrêter le serveur :** `Ctrl+C` dans la fenêtre PowerShell.

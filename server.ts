@@ -17,7 +17,7 @@ async function startServer() {
 
   app.use('/api/v1', createApiRouter(ctx));
 
-  const isProd = process.env.NODE_ENV === 'production';
+  const isProd = process.env.NODE_ENV === 'production' || process.argv.includes('--production');
   if (!isProd) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
