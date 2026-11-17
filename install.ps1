@@ -21,7 +21,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
 
 $NodeMajor = [int](node -p "process.versions.node.split('.')[0]")
 if ($NodeMajor -lt 22) {
-  Write-Error "Node.js v22+ est requis (version détectée : $(node -v))."
+  Write-Error "Node.js v22+ est requis (version detectee : $(node -v))."
   exit 1
 }
 

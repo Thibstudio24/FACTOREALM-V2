@@ -9,3 +9,5 @@ coverage/
 data/
 .playwright-cli/
 dist-packages/
+package-lock.json
+bun.lock

@@ -18,6 +18,7 @@ import {
   buildWindowsStartMenuShortcutPs1,
   copyProjectFiles,
   lockfileNeedsPlatformReset,
+  nodeModulesMissingNativeBindings,
   parseInstallerArgs,
   validateHost,
   validatePort,
@@ -119,20 +120,45 @@ test('Validation port/hôte, parsing arguments et génération scripts Windows/L
   assert.match(winRemovePath, /SetEnvironmentVariable/);
 
   const tmpLock = path.join(os.tmpdir(), `factorealm-lock-test-${process.pid}.json`);
+  const tmpNmRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'factorealm-nm-check-'));
   try {
     fs.writeFileSync(
       tmpLock,
       JSON.stringify({
         packages: {
           'node_modules/@esbuild/linux-x64': { version: '0.28.2' },
+          'node_modules/@rolldown/binding-linux-x64-gnu': { version: '1.0.0' },
+          'node_modules/@typescript/typescript-linux-x64': { version: '7.0.2' },
         },
       }),
     );
     assert.equal(lockfileNeedsPlatformReset(tmpLock, 'linux', 'x64'), false);
     assert.equal(lockfileNeedsPlatformReset(tmpLock, 'win32', 'x64'), true);
     assert.equal(lockfileNeedsPlatformReset(tmpLock, 'linux', 'arm64'), true);
+
+    fs.mkdirSync(path.join(tmpNmRoot, 'node_modules', '@esbuild', 'win32-x64'), { recursive: true });
+    assert.equal(
+      nodeModulesMissingNativeBindings(tmpNmRoot, { platform: 'win32', arch: 'x64', includeDev: true }),
+      true,
+    );
+    fs.mkdirSync(path.join(tmpNmRoot, 'node_modules', '@rolldown', 'binding-win32-x64-msvc'), { recursive: true });
+    fs.mkdirSync(path.join(tmpNmRoot, 'node_modules', '@tailwindcss', 'oxide-win32-x64-msvc'), { recursive: true });
+    assert.equal(
+      nodeModulesMissingNativeBindings(tmpNmRoot, { platform: 'win32', arch: 'x64', includeDev: false }),
+      false,
+    );
+    assert.equal(
+      nodeModulesMissingNativeBindings(tmpNmRoot, { platform: 'win32', arch: 'x64', includeDev: true }),
+      true,
+    );
+    fs.mkdirSync(path.join(tmpNmRoot, 'node_modules', '@typescript', 'typescript-win32-x64'), { recursive: true });
+    assert.equal(
+      nodeModulesMissingNativeBindings(tmpNmRoot, { platform: 'win32', arch: 'x64', includeDev: true }),
+      false,
+    );
   } finally {
     fs.rmSync(tmpLock, { force: true });
+    fs.rmSync(tmpNmRoot, { recursive: true, force: true });
   }
 });
 
@@ -142,6 +168,7 @@ test('Installateur bout-en-bout : copie allégée, .env, PATH et CLI start/statu
   const dataDir = path.join(tmpRoot, 'server-data');
   const binDir = path.join(tmpRoot, 'usr-bin');
   const port = await getFreePort();
+  const symlinkedNodeModules = path.join(targetDir, 'node_modules');
 
   try {
     // 1. Préparer une copie allégée sans docs, tests, fichiers packaging ni fichiers inutiles
@@ -157,33 +184,42 @@ test('Installateur bout-en-bout : copie allégée, .env, PATH et CLI start/statu
     assert.equal(fs.existsSync(path.join(targetDir, 'src', 'core', 'core.test.ts')), false);
     assert.equal(fs.existsSync(path.join(targetDir, 'bin', 'factorealm.mjs')), true);
 
-    fs.symlinkSync(path.join(process.cwd(), 'node_modules'), path.join(targetDir, 'node_modules'), 'dir');
+    fs.symlinkSync(
+      path.join(process.cwd(), 'node_modules'),
+      symlinkedNodeModules,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
 
     // Simuler un dist/ déjà compilé pour tester --production avec la CLI factorealm
     fs.mkdirSync(path.join(targetDir, 'dist'), { recursive: true });
     fs.writeFileSync(path.join(targetDir, 'dist', 'index.html'), '<!doctype html><html><body>Factorealm</body></html>');
 
-    // 2. Exécuter install.mjs avec FACTOREALM_BIN_DIR isolé
+    // 2. Exécuter install.mjs avec FACTOREALM_BIN_DIR isolé (sans modifier PATH/Menu Démarrer réels sous Windows)
+    const installerArgs = [
+      path.join(process.cwd(), 'installer', 'install.mjs'),
+      '--yes',
+      `--install-dir=${targetDir}`,
+      `--data-dir=${dataDir}`,
+      `--port=${port}`,
+      '--host=127.0.0.1',
+      '--init-company',
+      '--company-name=Install Test SAS',
+      '--legal-form=SAS',
+      '--siret=73282932000074',
+      '--admin-name=Paul Durand',
+      '--admin-email=paul@install-test.fr',
+      '--admin-password-env=FR_TEST_ADMIN_PASS',
+      '--skip-install',
+      '--skip-build',
+      '--skip-tests',
+    ];
+    if (process.platform === 'win32') {
+      installerArgs.push('--skip-shortcuts', '--skip-path');
+    }
+
     const res = spawnSync(
       process.execPath,
-      [
-        path.join(process.cwd(), 'installer', 'install.mjs'),
-        '--yes',
-        `--install-dir=${targetDir}`,
-        `--data-dir=${dataDir}`,
-        `--port=${port}`,
-        '--host=127.0.0.1',
-        '--init-company',
-        '--company-name=Install Test SAS',
-        '--legal-form=SAS',
-        '--siret=73282932000074',
-        '--admin-name=Paul Durand',
-        '--admin-email=paul@install-test.fr',
-        '--admin-password-env=FR_TEST_ADMIN_PASS',
-        '--skip-install',
-        '--skip-build',
-        '--skip-tests',
-      ],
+      installerArgs,
       {
         encoding: 'utf8',
         env: {
@@ -207,6 +243,7 @@ test('Installateur bout-en-bout : copie allégée, .env, PATH et CLI start/statu
     if (process.platform === 'win32') {
       assert.equal(fs.existsSync(path.join(targetDir, 'factorealm-start.cmd')), true);
       assert.equal(fs.existsSync(path.join(targetDir, 'add-to-path.ps1')), true);
+      assert.equal(fs.existsSync(path.join(targetDir, 'create-start-menu-shortcut.ps1')), true);
       assert.equal(fs.existsSync(path.join(targetDir, 'factorealm.service')), false);
     } else {
       assert.equal(fs.existsSync(path.join(targetDir, 'factorealm-start.sh')), true);
@@ -267,6 +304,13 @@ test('Installateur bout-en-bout : copie allégée, .env, PATH et CLI start/statu
           // ignore
         }
       }
+    }
+    try {
+      if (fs.existsSync(symlinkedNodeModules)) {
+        fs.unlinkSync(symlinkedNodeModules);
+      }
+    } catch {
+      // ignore
     }
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

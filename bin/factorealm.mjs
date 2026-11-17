@@ -55,7 +55,9 @@ export function loadDotEnv(appRoot = APP_ROOT) {
     if (eqIdx <= 0) continue;
     const key = line.slice(0, eqIdx).trim();
     let val = line.slice(eqIdx + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    if (val.startsWith('"') && val.endsWith('"')) {
+      val = val.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+    } else if (val.startsWith("'") && val.endsWith("'")) {
       val = val.slice(1, -1);
     }
     vars[key] = val;

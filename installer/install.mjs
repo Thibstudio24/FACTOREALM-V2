@@ -21,6 +21,7 @@ import {
   buildWindowsUnregisterTaskPs1,
   copyProjectFiles,
   lockfileNeedsPlatformReset,
+  nodeModulesMissingNativeBindings,
   parseInstallerArgs,
   pruneUnnecessaryInstalledFiles,
   validateHost,
@@ -94,11 +95,15 @@ async function checkPrerequisites() {
 }
 
 function runCmd(cmd, args, cwd) {
+  const needsShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(cmd);
   const res = spawnSync(cmd, args, {
     cwd,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: needsShell,
   });
+  if (res.error) {
+    throw res.error;
+  }
   if (res.status !== 0) {
     throw new Error(`Échec de la commande : ${cmd} ${args.join(' ')}`);
   }
@@ -374,20 +379,27 @@ async function main() {
     // 7. Installation dépendances & build
     if (!opts.skipInstall) {
       const lockPath = path.join(installDir, 'package-lock.json');
-      if (lockfileNeedsPlatformReset(lockPath)) {
+      const useOmitDev = opts.omitDev && (opts.skipBuild || fs.existsSync(path.join(installDir, 'dist', 'index.html'))) && !runTests;
+      if (
+        lockfileNeedsPlatformReset(lockPath) ||
+        nodeModulesMissingNativeBindings(installDir, { includeDev: !useOmitDev })
+      ) {
         console.log(
-          `      Lockfile d'une autre plateforme détecté : réinitialisation pour ${process.platform}-${process.arch}...`,
+          `      Réinitialisation des dépendances natives pour ${process.platform}-${process.arch}...`,
         );
         fs.rmSync(lockPath, { force: true });
         fs.rmSync(path.join(installDir, 'node_modules'), { recursive: true, force: true });
       }
-      const useOmitDev = opts.omitDev && (opts.skipBuild || fs.existsSync(path.join(installDir, 'dist', 'index.html'))) && !runTests;
       console.log(
         useOmitDev
-          ? '[3/5] Installation des dépendances de production (npm install --omit=dev)...'
-          : '[3/5] Installation des dépendances npm...',
+          ? '[3/5] Installation des dépendances de production (npm install --omit=dev --include=optional)...'
+          : '[3/5] Installation des dépendances npm (--include=optional)...',
       );
-      runCmd(npmCmd, useOmitDev ? ['install', '--omit=dev'] : ['install'], installDir);
+      runCmd(
+        npmCmd,
+        useOmitDev ? ['install', '--omit=dev', '--include=optional'] : ['install', '--include=optional'],
+        installDir,
+      );
     } else {
       console.log('[3/5] Installation npm ignorée (--skip-install).');
     }

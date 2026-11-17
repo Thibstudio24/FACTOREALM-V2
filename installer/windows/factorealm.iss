@@ -1,4 +1,4 @@
-; Factorealm — Script Inno Setup 6 (Windows x64)
+﻿; Factorealm — Script Inno Setup 6 (Windows x64)
 ; Auteur initial : Thibstudio24 — Licence code envisagée : AGPL-3.0
 ; À compiler sur un poste Windows avec Inno Setup 6.1+ (ISCC.exe).
 
@@ -43,16 +43,27 @@ Name: "desktopicon"; Description: "Créer un raccourci d'ouverture dans le navig
 [Dirs]
 Name: "{commonappdata}\Factorealm\data\uploads"
 
+[InstallDelete]
+Type: files; Name: "{app}\package-lock.json"
+Type: filesandordirs; Name: "{app}\node_modules"
+
 [Files]
-; Copier uniquement les fichiers nécessaires à l'exécution (sans docs, sources frontend ni tests)
+; Copier le serveur et, selon disponibilité au moment du packaging, soit dist/ précompilé soit les sources nécessaires au build
 Source: "..\..\server.ts"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\package.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\package-lock.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if FileExists(AddBackslash(SourcePath) + "..\..\dist\index.html")
 Source: "..\..\dist\*"; DestDir: "{app}\dist"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\migrations\*"; DestDir: "{app}\migrations"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\src\core\*"; DestDir: "{app}\src\core"; Excludes: "*.test.*,*.spec.*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\src\server\*"; DestDir: "{app}\src\server"; Excludes: "*.test.*,*.spec.*"; Flags: ignoreversion recursesubdirs createallsubdirs
+#else
+Source: "..\..\index.html"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\vite.config.ts"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\tsconfig.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\public\*"; DestDir: "{app}\public"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\src\*"; DestDir: "{app}\src"; Excludes: "*.test.*,*.spec.*"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
+Source: "..\..\migrations\*"; DestDir: "{app}\migrations"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\installer\install.mjs"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "..\..\installer\installerCore.mjs"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "..\..\installer\bootstrap-company.ts"; DestDir: "{app}\installer"; Flags: ignoreversion
@@ -73,7 +84,7 @@ Name: "{autodesktop}\Ouvrir Factorealm"; Filename: "http://127.0.0.1:{code:GetPo
 Filename: "msiexec.exe"; Parameters: "/i ""{tmp}\{#NodeInstallerName}"" /qn /norestart"; StatusMsg: "Installation de Node.js 22 LTS (prérequis serveur)..."; Check: NeedsNodeInstall; Flags: waituntilterminated
 
 ; 2. Installer les dépendances npm, écrire .env, compiler et initialiser l'entreprise si demandée
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\windows\install-from-inno.ps1"" -InstallDir ""{app}"" -DataDir ""{code:GetDataDir}"" -Port ""{code:GetPort}"" -ListenHost ""{code:GetHost}"" -InitCompany ""{code:GetInitCompanyFlag}"" -CompanyName ""{code:GetCompanyName}"" -Siret ""{code:GetSiret}"" -AdminName ""{code:GetAdminName}"" -AdminEmail ""{code:GetAdminEmail}"" -RegisterTask ""{code:GetRegisterTaskFlag}"""; StatusMsg: "Installation des dépendances npm et configuration de Factorealm (cela peut prendre quelques minutes)..."; Flags: waituntilterminated
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\installer\windows\install-from-inno.ps1"""; StatusMsg: "Installation des dépendances npm et configuration de Factorealm (cela peut prendre quelques minutes)..."; Flags: waituntilterminated
 
 ; 3. Option d'ouverture immédiate après installation
 Filename: "http://127.0.0.1:{code:GetPort}"; Description: "Ouvrir Factorealm dans le navigateur"; Flags: postinstall shellexec skipifsilent
@@ -104,12 +115,14 @@ var
   MajorStr: String;
 begin
   Result := False;
-  NodeExe := ExpandConstant('{pf}\nodejs\node.exe');
+  NodeExe := ExpandConstant('{commonpf}\nodejs\node.exe');
+  if not FileExists(NodeExe) then
+    NodeExe := ExpandConstant('{localappdata}\Programs\nodejs\node.exe');
   if not FileExists(NodeExe) then
     NodeExe := 'node.exe';
 
   TmpOut := ExpandConstant('{tmp}\nodever.txt');
-  if Exec('cmd.exe', '/c "' + NodeExe + '" -p "process.versions.node.split(''.'')[0]" > "' + TmpOut + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  if Exec('cmd.exe', '/c ""' + NodeExe + '" -p "process.versions.node.split(''.'')[0]" > "' + TmpOut + '""', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     if (ResultCode = 0) and LoadStringFromFile(TmpOut, Content) then
     begin
@@ -353,15 +366,57 @@ begin
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
+var
+  LogPath: String;
+  LogAnsi: AnsiString;
+  LogText: String;
 begin
-  if (CurStep = ssInstall) and (CompanyModePage.SelectedValueIndex = 1) then
+  if CurStep = ssInstall then
   begin
-    { Passe le mot de passe en mémoire uniquement au processus PowerShell enfant (jamais écrit sur disque) }
-    SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_PASS', AdminInfoPage.Values[2]);
+    SetEnvironmentVariableW('FACTOREALM_INNO_INSTALL_DIR', RemoveBackslashUnlessRoot(ExpandConstant('{app}')));
+    SetEnvironmentVariableW('FACTOREALM_INNO_DATA_DIR', RemoveBackslashUnlessRoot(GetDataDir('')));
+    SetEnvironmentVariableW('FACTOREALM_INNO_PORT', GetPort(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_HOST', GetHost(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_INIT_COMPANY', GetInitCompanyFlag(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_COMPANY_NAME', GetCompanyName(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_SIRET', GetSiret(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_NAME', GetAdminName(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_EMAIL', GetAdminEmail(''));
+    SetEnvironmentVariableW('FACTOREALM_INNO_REGISTER_TASK', GetRegisterTaskFlag(''));
+    if CompanyModePage.SelectedValueIndex = 1 then
+      SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_PASS', AdminInfoPage.Values[2]);
   end
   else if CurStep = ssPostInstall then
   begin
     SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_PASS', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_INSTALL_DIR', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_DATA_DIR', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_PORT', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_HOST', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_INIT_COMPANY', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_COMPANY_NAME', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_SIRET', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_NAME', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_ADMIN_EMAIL', '');
+    SetEnvironmentVariableW('FACTOREALM_INNO_REGISTER_TASK', '');
+    if not FileExists(ExpandConstant('{app}\node_modules\tsx\dist\cli.mjs')) then
+    begin
+      LogPath := RemoveBackslashUnlessRoot(GetDataDir('')) + '\install.log';
+      LogText := '';
+      if FileExists(LogPath) and LoadStringFromFile(LogPath, LogAnsi) then
+      begin
+        LogText := String(LogAnsi);
+        if Length(LogText) > 700 then
+          LogText := '...' + Copy(LogText, Length(LogText) - 699, 700);
+      end;
+      MsgBox(
+        'Attention : l''installation des dépendances npm dans "' + ExpandConstant('{app}') + '" a échoué ou a été interrompue.' + #13#10 +
+        'Journal : ' + LogPath + #13#10 +
+        LogText + #13#10 + #13#10 +
+        'Commande de réparation (PowerShell Administrateur) :' + #13#10 +
+        'cd "' + ExpandConstant('{app}') + '"; npm.cmd install --include=optional',
+        mbError, MB_OK);
+    end;
   end;
 end;
 

@@ -190,7 +190,7 @@ export function buildWindowsStartPs1({ installDir }) {
 export function buildWindowsRegisterTaskPs1({ installDir, dataDir, taskName = 'FactorealmServer' }) {
   const effectiveDataDir = dataDir || `${installDir}\\data`;
   return [
-    '# Exécuter dans PowerShell en tant qu\'Administrateur',
+    '# Executer dans PowerShell en tant qu\'Administrateur',
     '$ErrorActionPreference = "Stop"',
     `$TaskName = "${taskName}"`,
     `$InstallDir = "${installDir}"`,
@@ -205,21 +205,21 @@ export function buildWindowsRegisterTaskPs1({ installDir, dataDir, taskName = 'F
     '$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)',
     'Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Principal $Principal -Settings $Settings -Force | Out-Null',
     'Start-ScheduledTask -TaskName $TaskName',
-    'Write-Host "Service / tâche planifiée $TaskName installé et démarré."',
+    'Write-Host "Service / tache planifiee $TaskName installe et demarre."',
     '',
   ].join('\r\n');
 }
 
 export function buildWindowsUnregisterTaskPs1({ taskName = 'FactorealmServer' }) {
   return [
-    '# Exécuter dans PowerShell en tant qu\'Administrateur',
+    '# Executer dans PowerShell en tant qu\'Administrateur',
     `$TaskName = "${taskName}"`,
     'if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {',
     '  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue',
     '  Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false',
-    '  Write-Host "Tâche $TaskName arrêtée et supprimée."',
+    '  Write-Host "Tache $TaskName arretee et supprimee."',
     '} else {',
-    '  Write-Host "Aucune tâche $TaskName trouvée."',
+    '  Write-Host "Aucune tache $TaskName trouvee."',
     '}',
     '',
   ].join('\r\n');
@@ -418,11 +418,51 @@ export function lockfileNeedsPlatformReset(
   try {
     const parsed = JSON.parse(fs.readFileSync(lockfilePath, 'utf8'));
     const pkgKeys = Object.keys(parsed?.packages ?? {});
-    const esbuildPlatformKeys = pkgKeys.filter((k) => k.includes('node_modules/@esbuild/'));
-    if (esbuildPlatformKeys.length === 0) return false;
-    const expectedSuffix = `node_modules/@esbuild/${platform}-${arch}`;
-    return !esbuildPlatformKeys.some((k) => k.endsWith(expectedSuffix));
+    const families = [
+      'node_modules/@esbuild/',
+      'node_modules/@rolldown/binding-',
+      'node_modules/@tailwindcss/oxide-',
+      'node_modules/@typescript/typescript-',
+    ];
+    const targetToken = `${platform}-${arch}`;
+    for (const family of families) {
+      const matched = pkgKeys.filter((k) => k.includes(family) && !k.includes('wasm32'));
+      if (matched.length > 0 && !matched.some((k) => k.includes(`${family}${targetToken}`))) {
+        return true;
+      }
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+export function getRequiredNativePackages({
+  platform = process.platform,
+  arch = process.arch,
+  includeDev = true,
+} = {}) {
+  const pkgs = [];
+  if (platform === 'win32' && arch === 'x64') {
+    pkgs.push('@esbuild/win32-x64', '@rolldown/binding-win32-x64-msvc', '@tailwindcss/oxide-win32-x64-msvc');
+    if (includeDev) {
+      pkgs.push('@typescript/typescript-win32-x64');
+    }
+  } else if (platform === 'linux' && arch === 'x64') {
+    pkgs.push('@esbuild/linux-x64', '@rolldown/binding-linux-x64-gnu', '@tailwindcss/oxide-linux-x64-gnu');
+    if (includeDev) {
+      pkgs.push('@typescript/typescript-linux-x64');
+    }
+  }
+  return pkgs;
+}
+
+export function nodeModulesMissingNativeBindings(
+  installDir,
+  { platform = process.platform, arch = process.arch, includeDev = true } = {},
+) {
+  const nmDir = path.join(installDir, 'node_modules');
+  if (!fs.existsSync(nmDir)) return false;
+  const required = getRequiredNativePackages({ platform, arch, includeDev });
+  return required.some((pkg) => !fs.existsSync(path.join(nmDir, ...pkg.split('/'))));
 }
